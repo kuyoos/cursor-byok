@@ -114,10 +114,6 @@ func decideForkPrefixRewind(intent InboundIntent, conversation *ConversationFile
 		decision.SkipReason = "fork_anchor_turn_seq_missing"
 		return decision
 	}
-	if decision.ServerTailTurnSeq < decision.TargetTurnSeq {
-		decision.SkipReason = "fork_prefix_at_active_tail"
-		return decision
-	}
 	decision.Apply = true
 	decision.Reason = "prepend_user_message_anchor"
 	decision.PrefixEntries = prefixEntriesBeforeTurn(conversation.Entries, decision.TargetTurnSeq)
