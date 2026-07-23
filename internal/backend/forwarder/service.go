@@ -556,6 +556,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.ConversationID = conversationID
 		intent.ConversationState = runRequest.GetConversationState()
 		intent.UserMessage = extractUserMessage(message)
+		intent.PrependUserMessages = extractRunRequestPrependUserMessages(runRequest)
 		intent.RequestContext = extractRequestContext(message)
 		if service.shouldIgnoreEmptyResumeRunRequest(requestID, runRequest, intent.UserMessage, intent.RequestContext) {
 			intent.Kind = "metadata"
@@ -2501,6 +2502,13 @@ func extractUserMessage(message *agentv1.AgentClientMessage) *agentv1.UserMessag
 	default:
 		return nil
 	}
+}
+
+func extractRunRequestPrependUserMessages(request *agentv1.AgentRunRequest) []*agentv1.UserMessage {
+	if request == nil {
+		return nil
+	}
+	return extractConversationActionPrependUserMessages(request.GetAction())
 }
 
 // extractRequestContext 从 legacy 请求中提取 request_context。
