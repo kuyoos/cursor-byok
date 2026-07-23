@@ -1,5 +1,4 @@
 name: Build Windows
-
 on:
   push:
     tags:
