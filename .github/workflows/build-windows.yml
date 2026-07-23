@@ -1,0 +1,59 @@
+name: Build Windows
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-amd64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Set up Protocol Buffers
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "29.x"
+
+      - name: Set up Task
+        uses: arduino/setup-task@v2
+        with:
+          version: "3.x"
+
+      - name: Install Go generators and Wails CLI
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.19.1
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.74
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build Windows AMD64 archive
+        run: task build
+
+      - name: Upload Windows archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-byok-windows-amd64-${{ github.ref_name }}
+          path: bin/cursor-byok-*-windows-amd64.zip
+          if-no-files-found: error
+          retention-days: 30
