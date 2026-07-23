@@ -1,16 +1,21 @@
 name: Build Windows
+
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-windows-amd64:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout source
@@ -52,7 +57,7 @@ jobs:
       - name: Upload Windows archive
         uses: actions/upload-artifact@v4
         with:
-          name: cursor-byok-windows-amd64-${{ github.ref_name }}
+          name: cursor-byok-windows-amd64-${{ github.sha }}
           path: bin/cursor-byok-*-windows-amd64.zip
           if-no-files-found: error
           retention-days: 30
