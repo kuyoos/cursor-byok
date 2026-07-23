@@ -1,0 +1,39 @@
+version: "3"
+
+includes:
+  common: ./build/Taskfile.yml
+  windows: ./build/windows/Taskfile.yml
+
+vars:
+  APP_NAME: "Cursor助手"
+  BIN_DIR: "bin"
+  APP_VERSION:
+    sh: 'go run ./scripts/release version -config ./build/config.yml'
+  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+
+tasks:
+  build:
+    summary: 构建 Windows AMD64 ZIP 分发包
+    cmds:
+      - task: clean:dist
+      - task: windows:create:zip
+        vars:
+          ARCH: amd64
+          OUTPUT: '{{.BIN_DIR}}/cursor-byok-windows-amd64.exe'
+          ZIP_NAME: 'cursor-byok-{{.APP_VERSION}}-windows-amd64.zip'
+
+  run:
+    summary: 运行 Windows 可执行文件
+    cmds:
+      - task: windows:run
+
+  clean:dist:
+    internal: true
+    cmds:
+      - mkdir -p "{{.BIN_DIR}}"
+      - rm -f "{{.BIN_DIR}}/cursor-byok-"*.zip "{{.BIN_DIR}}/cursor-byok-windows-amd64.exe"
+
+  dev:
+    summary: 启动 Windows 开发模式
+    cmds:
+      - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
