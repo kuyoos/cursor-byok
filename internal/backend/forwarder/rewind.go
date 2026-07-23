@@ -118,7 +118,20 @@ func decideForkPrefixRewind(intent InboundIntent, conversation *ConversationFile
 		decision.HasClientTurnCount,
 	)
 	if !found {
-		decision.SkipReason = "fork_prefix_message_not_found"
+		prefixEntries := buildClientForkPrefixEntries(intent.PrependUserMessages, intent.RequestID)
+		if len(prefixEntries) == 0 {
+			decision.SkipReason = "fork_prefix_message_not_found"
+			return decision
+		}
+		decision.Apply = true
+		decision.Reason = "fork_client_prefix_rebuild"
+		decision.MatchStrategy = "client_prefix_rebuild"
+		decision.PrefixEntries = prefixEntries
+		decision.PrependUserMessageCount = len(prefixEntries)
+		decision.TargetTurnSeq = maxHistoryTurnSeq(prefixEntries) + 1
+		decision.AnchorMessageID = lastUserMessageID(prefixEntries)
+		decision.IncomingMessageID = decision.AnchorMessageID
+		decision.DroppedEntryCount, decision.DroppedTurnCount, decision.DroppedSeqStart, decision.DroppedSeqEnd = droppedEntryStatsAfterEntry(conversation.Entries, 0)
 		return decision
 	}
 	decision.IncomingMessageID = messageID
@@ -138,6 +151,28 @@ func decideForkPrefixRewind(intent InboundIntent, conversation *ConversationFile
 	decision.PrefixEntries = cloneHistoryEntries(prefixEntriesThroughEntry(conversation.Entries, match.Entry.Seq))
 	decision.DroppedEntryCount, decision.DroppedTurnCount, decision.DroppedSeqStart, decision.DroppedSeqEnd = droppedEntryStatsAfterEntry(conversation.Entries, match.Entry.Seq)
 	return decision
+}
+
+func buildClientForkPrefixEntries(messages []*agentv1.UserMessage, requestID string) []HistoryEntry {
+	entries := make([]HistoryEntry, 0, len(messages))
+	for _, message := range messages {
+		if message == nil || (normalizedForkUserMessageText(message) == "" && strings.TrimSpace(message.GetMessageId()) == "") {
+			continue
+		}
+		payload, err := protojson.Marshal(normalizeUserMessageForStorage(message))
+		if err != nil {
+			continue
+		}
+		entries = append(entries, HistoryEntry{
+			Seq:       int64(len(entries) + 1),
+			TurnSeq:   int64(len(entries) + 1),
+			RequestID: strings.TrimSpace(requestID),
+			Role:      "user",
+			Kind:      "user_message",
+			Payload:   payload,
+		})
+	}
+	return entries
 }
 
 func selectForkPrefixRewindMatch(entries []HistoryEntry, messages []*agentv1.UserMessage, clientTurnCount int, hasClientTurnCount bool) (runRewindMatch, string, string, int, bool) {
