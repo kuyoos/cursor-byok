@@ -702,12 +702,13 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		if err != nil {
 			return err
 		}
+		finalizeRunRewindProjection(&rewindDecision, initialEntries)
 	}
 	if service.store != nil {
 		if rewindDecision.Apply {
 			persisted, err := service.store.ReplaceEntries(
 				intent.ConversationID,
-				appendReplacementRunEntries(rewindDecision.PrefixEntries, initialEntries),
+				rewindDecision.ProjectedEntries,
 				func(item *ConversationFile) error {
 					applyRunRewindMetadata(item, conversation, intent, turnSeq)
 					return nil
@@ -730,7 +731,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 			}
 		}
 	} else if rewindDecision.Apply {
-		service.applyRunRewindToConversation(conversation, rewindDecision, initialEntries, intent, turnSeq)
+		service.applyRunRewindToConversation(conversation, rewindDecision, intent, turnSeq)
 		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_applied", rewindDecision)
 	} else if len(initialEntries) > 0 {
 		appendEntriesInPlace(conversation, initialEntries)
@@ -1389,17 +1390,20 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	}
 	providerRequest.ThinkingEffort = thinkingEffort
 	service.debug.LogProvider(context.Background(), requestID, conversationID, "provider_request_prepared", map[string]any{
-		"model_call_id":          strings.TrimSpace(modelCallID),
-		"provider_pass":          currentPass,
-		"model_id":               strings.TrimSpace(modelID),
-		"model_name":             strings.TrimSpace(modelName),
-		"mode":                   compiled.Mode.String(),
-		"thinking_effort":        strings.TrimSpace(thinkingEffort),
-		"max_tokens":             maxTokens,
-		"request_knobs":          requestKnobs,
-		"message_count":          len(compiled.Messages),
-		"tool_count":             len(compiled.Tools),
-		"compile_summary_length": len(compiled.CompileSummary),
+		"model_call_id":                 strings.TrimSpace(modelCallID),
+		"provider_pass":                 currentPass,
+		"model_id":                      strings.TrimSpace(modelID),
+		"model_name":                    strings.TrimSpace(modelName),
+		"mode":                          compiled.Mode.String(),
+		"thinking_effort":               strings.TrimSpace(thinkingEffort),
+		"max_tokens":                    maxTokens,
+		"request_knobs":                 requestKnobs,
+		"message_count":                 len(compiled.Messages),
+		"provider_replay_message_count": len(compiled.Messages),
+		"checkpoint_entry_count":        len(conversation.Entries),
+		"checkpoint_tail_turn_seq":      maxHistoryTurnSeq(conversation.Entries),
+		"tool_count":                    len(compiled.Tools),
+		"compile_summary_length":        len(compiled.CompileSummary),
 	})
 	go service.runProviderStream(stream, currentToken, ctx, providerRequest)
 	return nil

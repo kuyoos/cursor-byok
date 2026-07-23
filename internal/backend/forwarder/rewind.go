@@ -26,15 +26,26 @@ type runRewindDecision struct {
 	TargetEntrySeq          int64
 	TargetRequestID         string
 	MatchCount              int
+	MatchStrategy           string
 	DroppedEntryCount       int
 	DroppedTurnCount        int
 	DroppedSeqStart         int64
 	DroppedSeqEnd           int64
 	PrefixEntries           []HistoryEntry
+	ProjectedEntries        []HistoryEntry
+	ProjectedEntryCount     int
+	ProjectedTailTurnSeq    int64
+	ProjectedLastMessageID  string
+	ProjectedLastRequestID  string
 }
 
 type runRewindMatch struct {
 	Entry HistoryEntry
+}
+
+type storedUserMessageEntry struct {
+	Match   runRewindMatch
+	Message *agentv1.UserMessage
 }
 
 func (service *Service) decideRunRewind(intent InboundIntent, conversation *ConversationFile) runRewindDecision {
@@ -74,6 +85,7 @@ func (service *Service) decideRunRewind(intent InboundIntent, conversation *Conv
 	decision.TargetTurnSeq = selected.Entry.TurnSeq
 	decision.TargetEntrySeq = selected.Entry.Seq
 	decision.TargetRequestID = strings.TrimSpace(selected.Entry.RequestID)
+	decision.MatchStrategy = "message_id"
 	if decision.TargetTurnSeq <= 0 {
 		decision.SkipReason = "target_turn_seq_missing"
 		return decision
@@ -88,7 +100,7 @@ func (service *Service) decideRunRewind(intent InboundIntent, conversation *Conv
 
 	decision.Apply = true
 	decision.Reason = selectReason
-	decision.PrefixEntries = prefixEntriesBeforeTurn(conversation.Entries, decision.TargetTurnSeq)
+	decision.PrefixEntries = cloneHistoryEntries(prefixEntriesBeforeTurn(conversation.Entries, decision.TargetTurnSeq))
 	decision.DroppedEntryCount, decision.DroppedTurnCount, decision.DroppedSeqStart, decision.DroppedSeqEnd = droppedEntryStats(conversation.Entries, decision.TargetTurnSeq)
 	return decision
 }
@@ -96,47 +108,219 @@ func (service *Service) decideRunRewind(intent InboundIntent, conversation *Conv
 func decideForkPrefixRewind(intent InboundIntent, conversation *ConversationFile, decision runRewindDecision) runRewindDecision {
 	decision.PrependUserMessageCount = len(intent.PrependUserMessages)
 	if conversation == nil || len(conversation.Entries) == 0 {
-		decision.SkipReason = "fork_prefix_message_id_not_found"
+		decision.SkipReason = "fork_prefix_history_missing"
 		return decision
 	}
-	match, messageID, found := selectForkPrefixRewindMatch(conversation.Entries, intent.PrependUserMessages)
+	match, messageID, strategy, matchCount, found := selectForkPrefixRewindMatch(
+		conversation.Entries,
+		intent.PrependUserMessages,
+		decision.ClientTurnCount,
+		decision.HasClientTurnCount,
+	)
 	if !found {
-		decision.SkipReason = "fork_prefix_message_id_not_found"
+		decision.SkipReason = "fork_prefix_message_not_found"
 		return decision
 	}
 	decision.IncomingMessageID = messageID
 	decision.AnchorMessageID = messageID
-	decision.MatchCount = len(findUserMessageEntriesByMessageID(conversation.Entries, messageID))
+	decision.MatchStrategy = strategy
+	decision.MatchCount = matchCount
 	decision.TargetTurnSeq = match.Entry.TurnSeq + 1
 	decision.TargetEntrySeq = match.Entry.Seq
 	decision.TargetRequestID = strings.TrimSpace(match.Entry.RequestID)
-	if decision.TargetTurnSeq <= 0 {
-		decision.SkipReason = "fork_anchor_turn_seq_missing"
+	if decision.TargetTurnSeq <= 1 || decision.TargetEntrySeq <= 0 {
+		decision.SkipReason = "fork_anchor_position_missing"
 		return decision
 	}
+
 	decision.Apply = true
 	decision.Reason = "prepend_user_message_anchor"
-	decision.PrefixEntries = prefixEntriesBeforeTurn(conversation.Entries, decision.TargetTurnSeq)
-	decision.DroppedEntryCount, decision.DroppedTurnCount, decision.DroppedSeqStart, decision.DroppedSeqEnd = droppedEntryStats(conversation.Entries, decision.TargetTurnSeq)
+	decision.PrefixEntries = cloneHistoryEntries(prefixEntriesThroughEntry(conversation.Entries, match.Entry.Seq))
+	decision.DroppedEntryCount, decision.DroppedTurnCount, decision.DroppedSeqStart, decision.DroppedSeqEnd = droppedEntryStatsAfterEntry(conversation.Entries, match.Entry.Seq)
 	return decision
 }
 
-func selectForkPrefixRewindMatch(entries []HistoryEntry, messages []*agentv1.UserMessage) (runRewindMatch, string, bool) {
-	for index := len(messages) - 1; index >= 0; index-- {
-		messageID := strings.TrimSpace(messages[index].GetMessageId())
-		matches := findUserMessageEntriesByMessageID(entries, messageID)
-		if len(matches) == 0 {
+func selectForkPrefixRewindMatch(entries []HistoryEntry, messages []*agentv1.UserMessage, clientTurnCount int, hasClientTurnCount bool) (runRewindMatch, string, string, int, bool) {
+	stored := collectStoredUserMessages(entries)
+	if len(stored) == 0 {
+		return runRewindMatch{}, "", "", 0, false
+	}
+
+	for messageIndex := len(messages) - 1; messageIndex >= 0; messageIndex-- {
+		messageID := strings.TrimSpace(messages[messageIndex].GetMessageId())
+		if messageID == "" {
 			continue
 		}
-		selected := matches[0]
-		for _, match := range matches[1:] {
-			if earlierHistoryEntry(selected.Entry, match.Entry) {
-				selected = match
+		matches := findStoredUserMessagesByID(stored, messageID)
+		if len(matches) > 0 {
+			selected := matches[len(matches)-1]
+			return selected.Match, messageID, "message_id", len(matches), true
+		}
+	}
+
+	for messageIndex := len(messages) - 1; messageIndex >= 0; messageIndex-- {
+		messageText := normalizedForkUserMessageText(messages[messageIndex])
+		if messageText == "" {
+			continue
+		}
+		matches := findStoredUserMessagesByText(stored, messageText)
+		if len(matches) > 0 {
+			selected := matches[len(matches)-1]
+			return selected.Match, strings.TrimSpace(selected.Message.GetMessageId()), "message_text", len(matches), true
+		}
+	}
+
+	if match, count, ok := matchForkUserMessageSequence(stored, messages); ok {
+		return match.Match, strings.TrimSpace(match.Message.GetMessageId()), "message_sequence", count, true
+	}
+
+	if inferred, ok := inferForkAnchorByTurnCount(stored, entries, clientTurnCount, hasClientTurnCount); ok {
+		return inferred.Match, strings.TrimSpace(inferred.Message.GetMessageId()), "turn_count", 1, true
+	}
+	return runRewindMatch{}, "", "", 0, false
+}
+
+func collectStoredUserMessages(entries []HistoryEntry) []storedUserMessageEntry {
+	stored := make([]storedUserMessageEntry, 0)
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Kind) != "user_message" || len(entry.Payload) == 0 {
+			continue
+		}
+		message := &agentv1.UserMessage{}
+		if err := protojson.Unmarshal(entry.Payload, message); err != nil {
+			continue
+		}
+		stored = append(stored, storedUserMessageEntry{Match: runRewindMatch{Entry: entry}, Message: message})
+	}
+	return stored
+}
+
+func findStoredUserMessagesByID(stored []storedUserMessageEntry, messageID string) []storedUserMessageEntry {
+	messageID = strings.TrimSpace(messageID)
+	matches := make([]storedUserMessageEntry, 0, 1)
+	for _, item := range stored {
+		if strings.TrimSpace(item.Message.GetMessageId()) == messageID {
+			matches = append(matches, item)
+		}
+	}
+	return matches
+}
+
+func findStoredUserMessagesByText(stored []storedUserMessageEntry, text string) []storedUserMessageEntry {
+	matches := make([]storedUserMessageEntry, 0, 1)
+	for _, item := range stored {
+		if normalizedForkUserMessageText(item.Message) == text {
+			matches = append(matches, item)
+		}
+	}
+	return matches
+}
+
+func matchForkUserMessageSequence(stored []storedUserMessageEntry, messages []*agentv1.UserMessage) (storedUserMessageEntry, int, bool) {
+	clientTexts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if text := normalizedForkUserMessageText(message); text != "" {
+			clientTexts = append(clientTexts, text)
+		}
+	}
+	if len(clientTexts) < 2 {
+		return storedUserMessageEntry{}, 0, false
+	}
+	for sequenceLength := len(clientTexts); sequenceLength >= 2; sequenceLength-- {
+		clientSuffix := clientTexts[len(clientTexts)-sequenceLength:]
+		matchCount := 0
+		var selected storedUserMessageEntry
+		for end := sequenceLength - 1; end < len(stored); end++ {
+			matched := true
+			for offset := 0; offset < sequenceLength; offset++ {
+				if normalizedForkUserMessageText(stored[end-sequenceLength+1+offset].Message) != clientSuffix[offset] {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				matchCount++
+				selected = stored[end]
 			}
 		}
-		return selected, messageID, true
+		if matchCount > 0 {
+			return selected, matchCount, true
+		}
 	}
-	return runRewindMatch{}, "", false
+	return storedUserMessageEntry{}, 0, false
+}
+
+func inferForkAnchorByTurnCount(stored []storedUserMessageEntry, entries []HistoryEntry, clientTurnCount int, hasClientTurnCount bool) (storedUserMessageEntry, bool) {
+	if !hasClientTurnCount || clientTurnCount <= 0 {
+		return storedUserMessageEntry{}, false
+	}
+	serverTail := maxHistoryTurnSeq(entries)
+	delta := serverTail - int64(clientTurnCount)
+	if delta < -1 || delta > 1 {
+		return storedUserMessageEntry{}, false
+	}
+	var selected *storedUserMessageEntry
+	for index := range stored {
+		item := stored[index]
+		if item.Match.Entry.TurnSeq > int64(clientTurnCount) {
+			continue
+		}
+		if selected == nil || item.Match.Entry.TurnSeq >= selected.Match.Entry.TurnSeq {
+			candidate := item
+			selected = &candidate
+		}
+	}
+	if selected == nil {
+		return storedUserMessageEntry{}, false
+	}
+	return *selected, true
+}
+
+func forkUserMessageText(message *agentv1.UserMessage) string {
+	if message == nil {
+		return ""
+	}
+	if text := strings.TrimSpace(message.GetText()); text != "" {
+		return text
+	}
+	return strings.TrimSpace(message.GetRichText())
+}
+
+func normalizedForkUserMessageText(message *agentv1.UserMessage) string {
+	return strings.Join(strings.Fields(forkUserMessageText(message)), " ")
+}
+
+func prefixEntriesThroughEntry(entries []HistoryEntry, anchorSeq int64) []HistoryEntry {
+	prefix := make([]HistoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Seq <= anchorSeq {
+			prefix = append(prefix, entry)
+		}
+	}
+	return prefix
+}
+
+func droppedEntryStatsAfterEntry(entries []HistoryEntry, anchorSeq int64) (int, int, int64, int64) {
+	droppedTurns := make(map[int64]struct{})
+	var droppedEntries int
+	var seqStart int64
+	var seqEnd int64
+	for _, entry := range entries {
+		if entry.Seq <= anchorSeq {
+			continue
+		}
+		droppedEntries++
+		if entry.TurnSeq > 0 {
+			droppedTurns[entry.TurnSeq] = struct{}{}
+		}
+		if seqStart == 0 || entry.Seq < seqStart {
+			seqStart = entry.Seq
+		}
+		if entry.Seq > seqEnd {
+			seqEnd = entry.Seq
+		}
+	}
+	return droppedEntries, len(droppedTurns), seqStart, seqEnd
 }
 
 func shouldEvaluateRunRewind(intent InboundIntent) bool {
@@ -152,18 +336,10 @@ func findUserMessageEntriesByMessageID(entries []HistoryEntry, messageID string)
 		return nil
 	}
 	matches := make([]runRewindMatch, 0, 1)
-	for _, entry := range entries {
-		if strings.TrimSpace(entry.Kind) != "user_message" || len(entry.Payload) == 0 {
-			continue
+	for _, item := range collectStoredUserMessages(entries) {
+		if strings.TrimSpace(item.Message.GetMessageId()) == messageID {
+			matches = append(matches, item.Match)
 		}
-		userMessage := &agentv1.UserMessage{}
-		if err := protojson.Unmarshal(entry.Payload, userMessage); err != nil {
-			continue
-		}
-		if strings.TrimSpace(userMessage.GetMessageId()) != messageID {
-			continue
-		}
-		matches = append(matches, runRewindMatch{Entry: entry})
 	}
 	return matches
 }
@@ -223,9 +399,6 @@ func maxHistoryTurnSeq(entries []HistoryEntry) int64 {
 }
 
 func prefixEntriesBeforeTurn(entries []HistoryEntry, targetTurnSeq int64) []HistoryEntry {
-	if len(entries) == 0 {
-		return nil
-	}
 	prefix := make([]HistoryEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.TurnSeq < targetTurnSeq {
@@ -236,9 +409,6 @@ func prefixEntriesBeforeTurn(entries []HistoryEntry, targetTurnSeq int64) []Hist
 }
 
 func droppedEntryStats(entries []HistoryEntry, targetTurnSeq int64) (int, int, int64, int64) {
-	if len(entries) == 0 {
-		return 0, 0, 0, 0
-	}
 	droppedTurns := make(map[int64]struct{})
 	var droppedEntries int
 	var seqStart int64
@@ -261,21 +431,64 @@ func droppedEntryStats(entries []HistoryEntry, targetTurnSeq int64) (int, int, i
 	return droppedEntries, len(droppedTurns), seqStart, seqEnd
 }
 
-func appendReplacementRunEntries(prefix []HistoryEntry, entries []HistoryEntry) []HistoryEntry {
-	replacement := make([]HistoryEntry, 0, len(prefix)+len(entries))
-	replacement = append(replacement, prefix...)
-	replacement = append(replacement, entries...)
-	return replacement
+func buildRunRewindProjection(prefix []HistoryEntry, entries []HistoryEntry) []HistoryEntry {
+	projection := make([]HistoryEntry, 0, len(prefix)+len(entries))
+	projection = append(projection, cloneHistoryEntries(prefix)...)
+	projection = append(projection, cloneHistoryEntries(entries)...)
+	for index := range projection {
+		projection[index].Seq = int64(index + 1)
+	}
+	return projection
 }
 
-func (service *Service) applyRunRewindToConversation(conversation *ConversationFile, decision runRewindDecision, entries []HistoryEntry, intent InboundIntent, turnSeq int64) {
+func cloneHistoryEntries(entries []HistoryEntry) []HistoryEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	cloned := make([]HistoryEntry, len(entries))
+	for index, entry := range entries {
+		cloned[index] = entry
+		cloned[index].Payload = append([]byte(nil), entry.Payload...)
+	}
+	return cloned
+}
+
+func finalizeRunRewindProjection(decision *runRewindDecision, entries []HistoryEntry) {
+	if decision == nil || !decision.Apply {
+		return
+	}
+	decision.ProjectedEntries = buildRunRewindProjection(decision.PrefixEntries, entries)
+	decision.ProjectedEntryCount = len(decision.ProjectedEntries)
+	decision.ProjectedTailTurnSeq = maxHistoryTurnSeq(decision.ProjectedEntries)
+	decision.ProjectedLastMessageID = lastUserMessageID(decision.ProjectedEntries)
+	decision.ProjectedLastRequestID = lastHistoryRequestID(decision.ProjectedEntries)
+}
+
+func lastUserMessageID(entries []HistoryEntry) string {
+	stored := collectStoredUserMessages(entries)
+	if len(stored) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(stored[len(stored)-1].Message.GetMessageId())
+}
+
+func lastHistoryRequestID(entries []HistoryEntry) string {
+	for index := len(entries) - 1; index >= 0; index-- {
+		if requestID := strings.TrimSpace(entries[index].RequestID); requestID != "" {
+			return requestID
+		}
+	}
+	return ""
+}
+
+func (service *Service) applyRunRewindToConversation(conversation *ConversationFile, decision runRewindDecision, intent InboundIntent, turnSeq int64) {
 	if conversation == nil || !decision.Apply {
 		return
 	}
 	conversation.Entries = nil
 	conversation.NextEntrySeq = 1
 	conversation.NextTurnSeq = 1
-	appendEntriesInPlace(conversation, appendReplacementRunEntries(decision.PrefixEntries, entries))
+	appendEntriesInPlace(conversation, decision.ProjectedEntries)
 	applyRunRewindConversationState(conversation, intent, turnSeq)
 	deriveConversationLoopState(conversation)
 }
@@ -332,6 +545,7 @@ func (service *Service) logRunRewindDecision(requestID string, conversationID st
 		"apply":                      decision.Apply,
 		"reason":                     decision.Reason,
 		"skip_reason":                decision.SkipReason,
+		"fork_match_strategy":        decision.MatchStrategy,
 		"target_turn_seq":            decision.TargetTurnSeq,
 		"target_entry_seq":           decision.TargetEntrySeq,
 		"target_request_id":          decision.TargetRequestID,
@@ -342,6 +556,10 @@ func (service *Service) logRunRewindDecision(requestID string, conversationID st
 		"dropped_turn_count":         decision.DroppedTurnCount,
 		"dropped_seq_start":          decision.DroppedSeqStart,
 		"dropped_seq_end":            decision.DroppedSeqEnd,
+		"projected_entry_count":      decision.ProjectedEntryCount,
+		"projected_tail_turn_seq":    decision.ProjectedTailTurnSeq,
+		"projected_last_message_id":  decision.ProjectedLastMessageID,
+		"projected_last_request_id":  decision.ProjectedLastRequestID,
 	}
 	if decision.HasClientTurnCount {
 		fields["client_turn_count"] = decision.ClientTurnCount
