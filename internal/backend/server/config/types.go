@@ -21,26 +21,29 @@ const (
 )
 
 type ModelAdapterConfig struct {
-	ID                          string `json:"id,omitempty" yaml:"-"`
-	DisplayName                 string `json:"displayName" yaml:"displayName"`
-	Type                        string `json:"type" yaml:"type"`
-	BaseURL                     string `json:"baseURL" yaml:"baseURL"`
-	APIKey                      string `json:"apiKey" yaml:"apiKey"`
-	TooltipData                 string `json:"tooltipData" yaml:"tooltipData"`
-	ModelID                     string `json:"modelID" yaml:"modelID"`
-	ReasoningEffort             string `json:"reasoningEffort" yaml:"reasoningEffort"`
-	OpenAIEndpoint              string `json:"openAIEndpoint" yaml:"openAIEndpoint"`
-	OpenAIExtraParamsEnabled    bool   `json:"openAIExtraParamsEnabled" yaml:"openAIExtraParamsEnabled"`
-	OpenAIExtraParamsJSON       string `json:"openAIExtraParamsJSON" yaml:"openAIExtraParamsJSON"`
-	CustomHeadersEnabled        bool   `json:"customHeadersEnabled" yaml:"customHeadersEnabled"`
-	CustomHeadersJSON           string `json:"customHeadersJSON" yaml:"customHeadersJSON"`
-	AnthropicExtraParamsEnabled bool   `json:"anthropicExtraParamsEnabled" yaml:"anthropicExtraParamsEnabled"`
-	AnthropicExtraParamsJSON    string `json:"anthropicExtraParamsJSON" yaml:"anthropicExtraParamsJSON"`
-	ContextWindowTokens         int    `json:"contextWindowTokens" yaml:"contextWindowTokens"`
-	MaxCompletionTokens         int    `json:"maxCompletionTokens" yaml:"maxCompletionTokens"`
-	AnthropicMaxTokens          int    `json:"anthropicMaxTokens" yaml:"anthropicMaxTokens"`
-	AnthropicThinkingEffort     string `json:"anthropicThinkingEffort,omitempty" yaml:"anthropicThinkingEffort,omitempty"`
-	ThinkingBudgetTokens        int    `json:"thinkingBudgetTokens" yaml:"thinkingBudgetTokens"`
+	ID                          string   `json:"id,omitempty" yaml:"-"`
+	ProviderID                  string   `json:"providerID,omitempty" yaml:"-"`
+	ModelConfigID               string   `json:"modelConfigID,omitempty" yaml:"-"`
+	LegacyChannelIDs            []string `json:"legacyChannelIDs,omitempty" yaml:"-"`
+	DisplayName                 string   `json:"displayName" yaml:"displayName"`
+	Type                        string   `json:"type" yaml:"type"`
+	BaseURL                     string   `json:"baseURL" yaml:"baseURL"`
+	APIKey                      string   `json:"apiKey" yaml:"apiKey"`
+	TooltipData                 string   `json:"tooltipData" yaml:"tooltipData"`
+	ModelID                     string   `json:"modelID" yaml:"modelID"`
+	ReasoningEffort             string   `json:"reasoningEffort" yaml:"reasoningEffort"`
+	OpenAIEndpoint              string   `json:"openAIEndpoint" yaml:"openAIEndpoint"`
+	OpenAIExtraParamsEnabled    bool     `json:"openAIExtraParamsEnabled" yaml:"openAIExtraParamsEnabled"`
+	OpenAIExtraParamsJSON       string   `json:"openAIExtraParamsJSON" yaml:"openAIExtraParamsJSON"`
+	CustomHeadersEnabled        bool     `json:"customHeadersEnabled" yaml:"customHeadersEnabled"`
+	CustomHeadersJSON           string   `json:"customHeadersJSON" yaml:"customHeadersJSON"`
+	AnthropicExtraParamsEnabled bool     `json:"anthropicExtraParamsEnabled" yaml:"anthropicExtraParamsEnabled"`
+	AnthropicExtraParamsJSON    string   `json:"anthropicExtraParamsJSON" yaml:"anthropicExtraParamsJSON"`
+	ContextWindowTokens         int      `json:"contextWindowTokens" yaml:"contextWindowTokens"`
+	MaxCompletionTokens         int      `json:"maxCompletionTokens" yaml:"maxCompletionTokens"`
+	AnthropicMaxTokens          int      `json:"anthropicMaxTokens" yaml:"anthropicMaxTokens"`
+	AnthropicThinkingEffort     string   `json:"anthropicThinkingEffort,omitempty" yaml:"anthropicThinkingEffort,omitempty"`
+	ThinkingBudgetTokens        int      `json:"thinkingBudgetTokens" yaml:"thinkingBudgetTokens"`
 }
 
 type RoutingConfig struct {
@@ -51,12 +54,47 @@ type HomeMetricsConfig struct {
 	IncludeCacheWriteInHitRate bool `json:"includeCacheWriteInHitRate" yaml:"includeCacheWriteInHitRate"`
 }
 
+type ProviderModelConfig struct {
+	ID                          string   `json:"id" yaml:"id"`
+	ModelID                     string   `json:"modelID" yaml:"modelID"`
+	DisplayName                 string   `json:"displayName" yaml:"displayName"`
+	TooltipData                 string   `json:"tooltipData" yaml:"tooltipData"`
+	Enabled                     bool     `json:"enabled" yaml:"enabled"`
+	Available                   bool     `json:"available" yaml:"available"`
+	LegacyChannelIDs            []string `json:"legacyChannelIDs,omitempty" yaml:"legacyChannelIDs,omitempty"`
+	ReasoningEffort             string   `json:"reasoningEffort" yaml:"reasoningEffort"`
+	OpenAIEndpoint              string   `json:"openAIEndpoint" yaml:"openAIEndpoint"`
+	OpenAIExtraParamsEnabled    bool     `json:"openAIExtraParamsEnabled" yaml:"openAIExtraParamsEnabled"`
+	OpenAIExtraParamsJSON       string   `json:"openAIExtraParamsJSON" yaml:"openAIExtraParamsJSON"`
+	AnthropicExtraParamsEnabled bool     `json:"anthropicExtraParamsEnabled" yaml:"anthropicExtraParamsEnabled"`
+	AnthropicExtraParamsJSON    string   `json:"anthropicExtraParamsJSON" yaml:"anthropicExtraParamsJSON"`
+	ContextWindowTokens         int      `json:"contextWindowTokens" yaml:"contextWindowTokens"`
+	MaxCompletionTokens         int      `json:"maxCompletionTokens" yaml:"maxCompletionTokens"`
+	AnthropicMaxTokens          int      `json:"anthropicMaxTokens" yaml:"anthropicMaxTokens"`
+	AnthropicThinkingEffort     string   `json:"anthropicThinkingEffort,omitempty" yaml:"anthropicThinkingEffort,omitempty"`
+	ThinkingBudgetTokens        int      `json:"thinkingBudgetTokens" yaml:"thinkingBudgetTokens"`
+}
+
+type ProviderConfig struct {
+	ID                   string                `json:"id" yaml:"id"`
+	Name                 string                `json:"name" yaml:"name"`
+	Type                 string                `json:"type" yaml:"type"`
+	BaseURL              string                `json:"baseURL" yaml:"baseURL"`
+	APIKey               string                `json:"apiKey" yaml:"apiKey"`
+	DiscoveryPath        string                `json:"discoveryPath" yaml:"discoveryPath"`
+	CustomHeadersEnabled bool                  `json:"customHeadersEnabled" yaml:"customHeadersEnabled"`
+	CustomHeadersJSON    string                `json:"customHeadersJSON" yaml:"customHeadersJSON"`
+	Models               []ProviderModelConfig `json:"models" yaml:"models"`
+}
+
 type Config struct {
+	SchemaVersion             int                  `json:"schemaVersion" yaml:"schemaVersion"`
 	Log                       bool                 `json:"log" yaml:"log"`
 	ProviderStreamIdleTimeout int                  `json:"providerStreamIdleTimeout" yaml:"providerStreamIdleTimeout"`
 	BackendListenAddr         string               `json:"backendListenAddr" yaml:"backendListenAddr"`
 	ProxyListenAddr           string               `json:"proxyListenAddr" yaml:"proxyListenAddr"`
-	ModelAdapters             []ModelAdapterConfig `json:"modelAdapters" yaml:"modelAdapters"`
+	Providers                 []ProviderConfig     `json:"providers" yaml:"providers"`
+	ModelAdapters             []ModelAdapterConfig `json:"modelAdapters,omitempty" yaml:"modelAdapters,omitempty"`
 	Routing                   RoutingConfig        `json:"routing" yaml:"routing"`
 	HomeMetrics               HomeMetricsConfig    `json:"homeMetrics" yaml:"homeMetrics"`
 	LastAgentModelHash        string               `json:"lastAgentModelHash" yaml:"lastAgentModelHash"`
@@ -68,6 +106,7 @@ func DefaultConfig() Config {
 		ProviderStreamIdleTimeout: DefaultProviderStreamIdleTimeoutSeconds,
 		BackendListenAddr:         DefaultBackendListenAddr,
 		ProxyListenAddr:           DefaultProxyListenAddr,
+		Providers:                 []ProviderConfig{},
 		ModelAdapters:             []ModelAdapterConfig{},
 		Routing: RoutingConfig{
 			Mode: DefaultRoutingMode,
@@ -95,11 +134,22 @@ func NormalizeConfig(input Config) (Config, error) {
 	if output.Routing.Mode == "" {
 		output.Routing.Mode = DefaultRoutingMode
 	}
-	adapters, err := NormalizeModelAdapterConfigs(input.ModelAdapters)
+	providers, err := NormalizeProviderConfigs(input.Providers)
 	if err != nil {
 		return Config{}, err
 	}
-	output.ModelAdapters = adapters
+	if len(providers) == 0 && len(input.ModelAdapters) > 0 {
+		providers, err = MigrateModelAdaptersToProviders(input.ModelAdapters)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	output.SchemaVersion = 2
+	output.Providers = providers
+	output.ModelAdapters, err = ProjectEnabledModelAdapters(providers)
+	if err != nil {
+		return Config{}, err
+	}
 	return output, nil
 }
 
@@ -117,6 +167,10 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		}
 		nextType := normalizeModelAdapterType(item.Type)
 		next := ModelAdapterConfig{
+			ID:                   strings.TrimSpace(item.ID),
+			ProviderID:           strings.TrimSpace(item.ProviderID),
+			ModelConfigID:        strings.TrimSpace(item.ModelConfigID),
+			LegacyChannelIDs:     uniqueTrimmedStrings(item.LegacyChannelIDs),
 			DisplayName:          strings.TrimSpace(item.DisplayName),
 			Type:                 nextType,
 			BaseURL:              baseURL,
@@ -170,7 +224,9 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		case next.Type == "anthropic" && next.AnthropicThinkingEffort == "":
 			return nil, errors.New("模型适配器 anthropicThinkingEffort 仅支持 low、medium、high、xhigh、max")
 		}
-		next.ID = modelchannel.BuildChannelID(next.BaseURL, next.ModelID, next.APIKey, next.DisplayName, next.OpenAIEndpoint)
+		if next.ID == "" {
+			next.ID = modelchannel.BuildChannelID(next.BaseURL, next.ModelID, next.APIKey, next.DisplayName, next.OpenAIEndpoint)
+		}
 		if _, exists := seenChannelIDs[next.ID]; exists {
 			return nil, errors.New("模型适配器渠道不能重复，请检查 url、modelID、apiKey、displayName、endpoint 组合")
 		}

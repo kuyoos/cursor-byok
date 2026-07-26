@@ -128,6 +128,24 @@ export function getModelEditorContext() {
   return withApiLogging("GetModelEditorContext", undefined, () => GetModelEditorContext());
 }
 
+export function fetchProviderModels(provider) {
+  return withApiLogging("FetchProviderModels", provider, () =>
+    Call.ByName(`${PROXY_SERVICE_NAME}.FetchProviderModels`, provider),
+  );
+}
+
+export function testProviderConnectivity(provider) {
+  return withApiLogging("TestProviderConnectivity", provider, () =>
+    Call.ByName(`${PROXY_SERVICE_NAME}.TestProviderConnectivity`, provider),
+  );
+}
+
+export function testProviderModel(provider, model) {
+  return withApiLogging("TestProviderModel", { provider, model }, () =>
+    Call.ByName(`${PROXY_SERVICE_NAME}.TestProviderModel`, provider, model),
+  );
+}
+
 export function testModelAdapter(adapter) {
   return Call.ByName(`${PROXY_SERVICE_NAME}.TestModelAdapter`, adapter).then(
     (result) => {

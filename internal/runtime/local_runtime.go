@@ -36,6 +36,9 @@ const (
 // ModelAdapterConfig 定义了当前模块中的 ModelAdapterConfig 类型。
 type ModelAdapterConfig struct {
 	ID string `json:"id,omitempty"`
+	ProviderID string `json:"providerID,omitempty"`
+	ModelConfigID string `json:"modelConfigID,omitempty"`
+	LegacyChannelIDs []string `json:"legacyChannelIDs,omitempty"`
 	// DisplayName 表示当前声明中的 DisplayName。
 	DisplayName string `json:"displayName"`
 	// Type 表示当前声明中的 Type。
@@ -102,68 +105,118 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		if err != nil {
 			return nil, err
 		}
-		next := ModelAdapterConfig{
-			DisplayName:          strings.TrimSpace(item.DisplayName),
-			Type:                 normalizeModelAdapterType(item.Type),
-			BaseURL:              baseURL,
-			APIKey:               strings.TrimSpace(item.APIKey),
-			TooltipData:          strings.TrimSpace(item.TooltipData),
-			ModelID:              strings.TrimSpace(item.ModelID),
-			ReasoningEffort:      normalizeReasoningEffort(item.ReasoningEffort),
-			OpenAIEndpoint:       modelchannel.NormalizeOpenAIEndpoint(item.Type, item.OpenAIEndpoint),
-			ContextWindowTokens:  normalizeMaxCompletionTokens(item.ContextWindowTokens),
-			MaxCompletionTokens:  normalizeMaxCompletionTokens(item.MaxCompletionTokens),
-			AnthropicMaxTokens:   normalizeMaxCompletionTokens(item.AnthropicMaxTokens),
-			ThinkingBudgetTokens: normalizeMaxCompletionTokens(item.ThinkingBudgetTokens),
+		modelIDs := splitConfiguredModelIDs(item.ModelID)
+		if len(modelIDs) == 0 {
+			modelIDs = []string{""}
 		}
-		if next.Type == "openai" {
-			next.OpenAIExtraParamsEnabled = item.OpenAIExtraParamsEnabled
-			next.OpenAIExtraParamsJSON = strings.TrimSpace(item.OpenAIExtraParamsJSON)
-		} else if next.Type == "anthropic" {
-			next.AnthropicThinkingEffort = normalizeAnthropicThinkingEffort(item.AnthropicThinkingEffort)
-			next.AnthropicExtraParamsEnabled = item.AnthropicExtraParamsEnabled
-			next.AnthropicExtraParamsJSON = strings.TrimSpace(item.AnthropicExtraParamsJSON)
-		}
-		next.CustomHeadersEnabled = item.CustomHeadersEnabled
-		next.CustomHeadersJSON = strings.TrimSpace(item.CustomHeadersJSON)
-		switch {
-		case next.DisplayName == "":
-			return nil, errors.New("模型适配器 displayName 不能为空")
-		case next.Type == "":
-			return nil, errors.New("模型适配器 type 仅支持 openai 或 anthropic")
-		case next.APIKey == "":
-			return nil, errors.New("模型适配器 apiKey 不能为空")
-		case next.TooltipData == "":
-			return nil, errors.New("模型适配器 tooltipData 不能为空")
-		case next.ModelID == "":
-			return nil, errors.New("模型适配器 modelID 不能为空")
-		case next.Type == "openai" && next.ReasoningEffort == "":
-			return nil, errors.New("模型适配器 reasoningEffort 仅支持 low、medium、high、xhigh、max")
-		case next.Type == "openai" && next.OpenAIEndpoint == "":
-			return nil, errors.New("模型适配器 openAIEndpoint 仅支持 /v1/responses 或 /v1/chat/completions")
-		case next.Type == "openai" && next.OpenAIExtraParamsEnabled:
-			if err := validateJSONMap(next.OpenAIExtraParamsJSON, "openAIExtraParamsJSON"); err != nil {
-				return nil, err
+		for _, modelID := range modelIDs {
+			next := ModelAdapterConfig{
+				ID:                   strings.TrimSpace(item.ID),
+				ProviderID:           strings.TrimSpace(item.ProviderID),
+				ModelConfigID:        strings.TrimSpace(item.ModelConfigID),
+				LegacyChannelIDs:     append([]string(nil), item.LegacyChannelIDs...),
+				DisplayName:          buildExpandedModelDisplayName(item.DisplayName, modelID, len(modelIDs) > 1),
+				Type:                 normalizeModelAdapterType(item.Type),
+				BaseURL:              baseURL,
+				APIKey:               strings.TrimSpace(item.APIKey),
+				TooltipData:          strings.TrimSpace(item.TooltipData),
+				ModelID:              modelID,
+				ReasoningEffort:      normalizeReasoningEffort(item.ReasoningEffort),
+				OpenAIEndpoint:       modelchannel.NormalizeOpenAIEndpoint(item.Type, item.OpenAIEndpoint),
+				ContextWindowTokens:  normalizeMaxCompletionTokens(item.ContextWindowTokens),
+				MaxCompletionTokens:  normalizeMaxCompletionTokens(item.MaxCompletionTokens),
+				AnthropicMaxTokens:   normalizeMaxCompletionTokens(item.AnthropicMaxTokens),
+				ThinkingBudgetTokens: normalizeMaxCompletionTokens(item.ThinkingBudgetTokens),
 			}
-		case next.CustomHeadersEnabled:
-			if err := validateHeadersJSON(next.CustomHeadersJSON); err != nil {
-				return nil, err
+			if next.Type == "openai" {
+				next.OpenAIExtraParamsEnabled = item.OpenAIExtraParamsEnabled
+				next.OpenAIExtraParamsJSON = strings.TrimSpace(item.OpenAIExtraParamsJSON)
+			} else if next.Type == "anthropic" {
+				next.AnthropicThinkingEffort = normalizeAnthropicThinkingEffort(item.AnthropicThinkingEffort)
+				next.AnthropicExtraParamsEnabled = item.AnthropicExtraParamsEnabled
+				next.AnthropicExtraParamsJSON = strings.TrimSpace(item.AnthropicExtraParamsJSON)
 			}
-		case next.Type == "anthropic" && next.AnthropicExtraParamsEnabled:
-			if err := validateJSONMap(next.AnthropicExtraParamsJSON, "anthropicExtraParamsJSON"); err != nil {
-				return nil, err
+			next.CustomHeadersEnabled = item.CustomHeadersEnabled
+			next.CustomHeadersJSON = strings.TrimSpace(item.CustomHeadersJSON)
+			switch {
+			case next.DisplayName == "":
+				return nil, errors.New("模型适配器 displayName 不能为空")
+			case next.Type == "":
+				return nil, errors.New("模型适配器 type 仅支持 openai 或 anthropic")
+			case next.APIKey == "":
+				return nil, errors.New("模型适配器 apiKey 不能为空")
+			case next.TooltipData == "":
+				return nil, errors.New("模型适配器 tooltipData 不能为空")
+			case next.ModelID == "":
+				return nil, errors.New("模型适配器 modelID 不能为空")
+			case next.Type == "openai" && next.ReasoningEffort == "":
+				return nil, errors.New("模型适配器 reasoningEffort 仅支持 low、medium、high、xhigh、max")
+			case next.Type == "openai" && next.OpenAIEndpoint == "":
+				return nil, errors.New("模型适配器 openAIEndpoint 仅支持 /v1/responses 或 /v1/chat/completions")
+			case next.Type == "openai" && next.OpenAIExtraParamsEnabled:
+				if err := validateJSONMap(next.OpenAIExtraParamsJSON, "openAIExtraParamsJSON"); err != nil {
+					return nil, err
+				}
+			case next.CustomHeadersEnabled:
+				if err := validateHeadersJSON(next.CustomHeadersJSON); err != nil {
+					return nil, err
+				}
+			case next.Type == "anthropic" && next.AnthropicExtraParamsEnabled:
+				if err := validateJSONMap(next.AnthropicExtraParamsJSON, "anthropicExtraParamsJSON"); err != nil {
+					return nil, err
+				}
+			case next.Type == "anthropic" && next.AnthropicThinkingEffort == "":
+				return nil, errors.New("模型适配器 anthropicThinkingEffort 仅支持 low、medium、high、xhigh、max")
 			}
-		case next.Type == "anthropic" && next.AnthropicThinkingEffort == "":
-			return nil, errors.New("模型适配器 anthropicThinkingEffort 仅支持 low、medium、high、xhigh、max")
+			if next.ID == "" || len(modelIDs) > 1 {
+				next.ID = modelchannel.BuildChannelID(next.BaseURL, next.ModelID, next.APIKey, next.DisplayName, next.OpenAIEndpoint)
+			}
+			if _, exists := seenChannelIDs[next.ID]; exists {
+				return nil, errors.New("模型适配器渠道不能重复，请检查 url、modelID、apiKey、displayName、endpoint 组合")
+			}
+			seenChannelIDs[next.ID] = struct{}{}
+			normalized = append(normalized, next)
 		}
-		next.ID = modelchannel.BuildChannelID(next.BaseURL, next.ModelID, next.APIKey, next.DisplayName, next.OpenAIEndpoint)
-		if _, exists := seenChannelIDs[next.ID]; exists {
-			return nil, errors.New("模型适配器渠道不能重复，请检查 url、modelID、apiKey、displayName、endpoint 组合")
-		}
-		seenChannelIDs[next.ID] = struct{}{}
-		normalized = append(normalized, next)
 	}
 	return normalized, nil
+}
+
+func splitConfiguredModelIDs(value string) []string {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case '\n', '\r', ',', ';', '，', '；':
+			return true
+		default:
+			return false
+		}
+	})
+	output := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		modelID := strings.TrimSpace(field)
+		if modelID == "" {
+			continue
+		}
+		key := strings.ToLower(modelID)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		output = append(output, modelID)
+	}
+	return output
+}
+
+func buildExpandedModelDisplayName(displayName string, modelID string, expanded bool) string {
+	displayName = strings.TrimSpace(displayName)
+	modelID = strings.TrimSpace(modelID)
+	if !expanded {
+		return displayName
+	}
+	if strings.Contains(displayName, "{model}") {
+		return strings.TrimSpace(strings.ReplaceAll(displayName, "{model}", modelID))
+	}
+	return modelID
 }
 
 func validateJSONMap(value string, fieldName string) error {
@@ -243,6 +296,10 @@ func normalizeModelAdapterType(value string) string {
 type ResolvedChannel struct {
 	// ID 表示当前声明中的 ID。
 	ID string
+	// ProviderID 表示稳定的中转站配置 ID。
+	ProviderID string
+	// ModelConfigID 表示稳定的模型配置 ID。
+	ModelConfigID string
 	// Name 表示当前声明中的 Name。
 	Name string
 	// GroupName 表示当前声明中的 GroupName。
@@ -387,6 +444,8 @@ func (s *FixedChannelService) SelectChannelForModel(ctx context.Context, modelID
 		adapter := adapters[matchIndex]
 		resolved := ResolvedChannel{
 			ID:                          strings.TrimSpace(adapter.ID),
+			ProviderID:                  strings.TrimSpace(adapter.ProviderID),
+			ModelConfigID:               strings.TrimSpace(adapter.ModelConfigID),
 			Name:                        strings.TrimSpace(adapter.DisplayName),
 			GroupName:                   "local",
 			Code:                        strings.TrimSpace(adapter.ID),

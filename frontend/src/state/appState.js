@@ -16,6 +16,9 @@ import {
   saveUserConfig,
   startProxyService,
   stopProxyService,
+  fetchProviderModels,
+  testProviderConnectivity,
+  testProviderModel,
   testModelAdapter,
 } from "@/services/clientApi";
 
@@ -161,6 +164,48 @@ function buildModelAdapterIdentityKey(adapter) {
     asString(adapter.displayName),
     adapter.type === "openai" ? normalizeOpenAIEndpoint(adapter.openAIEndpoint) : "",
   ].join("\n");
+}
+
+function splitConfiguredModelIDs(value) {
+  const seen = new Set();
+  return asString(value)
+    .split(/[\n\r,;，；]+/)
+    .map((item) => item.trim())
+    .filter((item) => {
+      if (!item) {
+        return false;
+      }
+      const key = item.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
+function buildExpandedModelDisplayName(displayName, modelID, expanded) {
+  const name = asString(displayName);
+  const model = asString(modelID);
+  if (!expanded) {
+    return name;
+  }
+  if (name.includes("{model}")) {
+    return name.replaceAll("{model}", model).trim();
+  }
+  return model;
+}
+
+function buildExpandedModelAdapterIdentityKeys(adapter) {
+  const modelIDs = splitConfiguredModelIDs(adapter.modelID);
+  if (modelIDs.length === 0) {
+    return [];
+  }
+  return modelIDs.map((modelID) => buildModelAdapterIdentityKey({
+    ...adapter,
+    modelID,
+    displayName: buildExpandedModelDisplayName(adapter.displayName, modelID, modelIDs.length > 1),
+  }));
 }
 
 function hashStringFNV32a(value) {
@@ -404,6 +449,120 @@ export function normalizeModelAdapter(source) {
   };
 }
 
+export function createEmptyProviderModel(modelID = "") {
+  const adapter = createEmptyModelAdapter();
+  return {
+    ...adapter,
+    id: "",
+    modelID: asString(modelID),
+    displayName: asString(modelID),
+    enabled: false,
+    available: true,
+    legacyChannelIDs: [],
+  };
+}
+
+export function createEmptyProvider() {
+  return {
+    id: "",
+    name: "",
+    type: "openai",
+    baseURL: "",
+    apiKey: "",
+    discoveryPath: "/models",
+    customHeadersEnabled: false,
+    customHeadersJSON: CUSTOM_HEADERS_DEFAULT_JSON,
+    models: [],
+  };
+}
+
+export function normalizeProviderModel(source) {
+  const raw = source && typeof source === "object" ? source : {};
+  const normalized = normalizeModelAdapter(raw);
+  return {
+    ...normalized,
+    id: asString(raw.id),
+    modelID: asString(raw.modelID),
+    displayName: asString(raw.displayName) || asString(raw.modelID),
+    enabled: asBoolean(raw.enabled),
+    available: raw.available === undefined ? true : asBoolean(raw.available),
+    legacyChannelIDs: asArray(raw.legacyChannelIDs).map(asString).filter(Boolean),
+  };
+}
+
+export function normalizeProvider(source) {
+  const raw = source && typeof source === "object" ? source : {};
+  const type = asString(raw.type).toLowerCase();
+  return {
+    id: asString(raw.id),
+    name: asString(raw.name),
+    type: SUPPORTED_MODEL_ADAPTER_TYPES.has(type) ? type : "openai",
+    baseURL: normalizeBaseURL(raw.baseURL),
+    apiKey: asString(raw.apiKey),
+    discoveryPath: asString(raw.discoveryPath) || "/models",
+    customHeadersEnabled: asBoolean(raw.customHeadersEnabled),
+    customHeadersJSON: asString(raw.customHeadersJSON) || CUSTOM_HEADERS_DEFAULT_JSON,
+    models: asArray(raw.models).map(normalizeProviderModel),
+  };
+}
+
+export function normalizeProviders(source) {
+  return asArray(source).map(normalizeProvider);
+}
+
+export function validateProviders(source) {
+  const providers = normalizeProviders(source);
+  const providerIDs = new Set();
+  for (const [providerIndex, provider] of providers.entries()) {
+    const prefix = `中转站 ${providerIndex + 1}`;
+    if (!provider.name) return `${prefix} 的名称不能为空`;
+    if (!provider.baseURL) return `${prefix} 的接口地址不能为空`;
+    if (!provider.apiKey) return `${prefix} 的访问密钥不能为空`;
+    if (provider.id && providerIDs.has(provider.id)) return `${prefix} 的 ID 重复`;
+    if (provider.id) providerIDs.add(provider.id);
+    if (provider.customHeadersEnabled) {
+      const headerError = validateHeadersJSON(provider.customHeadersJSON);
+      if (headerError) return `${prefix} 的 ${headerError}`;
+    }
+    const modelIDs = new Set();
+    for (const model of provider.models) {
+      if (!model.modelID) return `${prefix} 存在模型标识为空的模型`;
+      const key = model.modelID.toLowerCase();
+      if (modelIDs.has(key)) return `${prefix} 的模型标识重复：${model.modelID}`;
+      modelIDs.add(key);
+    }
+  }
+  return "";
+}
+
+export function mergeDiscoveredProviderModels(provider, modelIDs) {
+  const current = normalizeProvider(provider);
+  const discovered = asArray(modelIDs).map(asString).filter(Boolean);
+  const discoveredKeys = new Set(discovered.map((modelID) => modelID.toLowerCase()));
+  const existing = new Map(current.models.map((model) => [model.modelID.toLowerCase(), model]));
+  const retained = current.models.map((model) => ({
+    ...model,
+    available: discoveredKeys.has(model.modelID.toLowerCase()),
+  }));
+  for (const modelID of discovered) {
+    if (existing.has(modelID.toLowerCase())) {
+      continue;
+    }
+    retained.push(createEmptyProviderModel(modelID));
+  }
+  return { ...current, models: retained };
+}
+
+export function createModelAdapterFromProvider(source) {
+  const adapter = normalizeModelAdapter(source);
+  return {
+    ...adapter,
+    id: "",
+    displayName: "",
+    modelID: "",
+  };
+}
+
 export function normalizeModelAdapters(source) {
   return asArray(source).map((item) => normalizeModelAdapter(item));
 }
@@ -429,6 +588,10 @@ export function validateModelAdapters(source) {
       return `${prefix} 的悬停提示不能为空`;
     }
     if (!adapter.modelID) {
+      return `${prefix} 的模型标识不能为空`;
+    }
+    const expandedIdentityKeys = buildExpandedModelAdapterIdentityKeys(adapter);
+    if (expandedIdentityKeys.length === 0) {
       return `${prefix} 的模型标识不能为空`;
     }
     if (adapter.type === "openai" && !SUPPORTED_REASONING_EFFORTS.has(adapter.reasoningEffort)) {
@@ -470,11 +633,12 @@ export function validateModelAdapters(source) {
     if (adapter.thinkingBudgetTokens && (!Number.isInteger(adapter.thinkingBudgetTokens) || adapter.thinkingBudgetTokens <= 0)) {
       return `${prefix} 的思考预算 Token 必须为正整数`;
     }
-    const dedupeKey = buildModelAdapterIdentityKey(adapter);
-    if (seenIdentityKeys.has(dedupeKey)) {
-      return `模型渠道重复，请检查 url、modelID、apiKey、displayName、endpoint 组合`;
+    for (const dedupeKey of expandedIdentityKeys) {
+      if (seenIdentityKeys.has(dedupeKey)) {
+        return `模型渠道重复，请检查 url、modelID、apiKey、displayName、endpoint 组合`;
+      }
+      seenIdentityKeys.add(dedupeKey);
     }
-    seenIdentityKeys.add(dedupeKey);
   }
   return "";
 }
@@ -496,6 +660,26 @@ function delay(ms) {
   });
 }
 
+function normalizeUsageAttributionMap(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(source).map(([key, value]) => {
+    const raw = value && typeof value === "object" ? value : {};
+    return [key, {
+      providerID: asString(raw.providerID),
+      modelConfigID: asString(raw.modelConfigID),
+      model: asString(raw.model),
+      providerCalls: Math.max(0, asNumber(raw.providerCalls)),
+      inputTokens: Math.max(0, asNumber(raw.inputTokens)),
+      outputTokens: Math.max(0, asNumber(raw.outputTokens)),
+      cacheReadTokens: Math.max(0, asNumber(raw.cacheReadTokens)),
+      cacheWriteTokens: Math.max(0, asNumber(raw.cacheWriteTokens)),
+      totalTokens: Math.max(0, asNumber(raw.totalTokens)),
+    }];
+  }));
+}
+
 function createEmptyHomeMetrics() {
   return {
     turnsTotal: 0,
@@ -506,6 +690,8 @@ function createEmptyHomeMetrics() {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     cacheHitRate: null,
+    byProvider: {},
+    byProviderModel: {},
   };
 }
 
@@ -538,6 +724,8 @@ function normalizeConfig(source) {
     providerStreamIdleTimeout: asPositiveInteger(raw.providerStreamIdleTimeout),
     backendListenAddr: asString(raw.configBackendListenAddr) || asString(raw.backendListenAddr),
     proxyListenAddr: asString(raw.configProxyListenAddr) || asString(raw.proxyListenAddr),
+    schemaVersion: asNumber(raw.schemaVersion, 2),
+    providers: normalizeProviders(raw.providers),
     modelAdapters: normalizeModelAdapters(raw.modelAdapters),
     routing: {
       mode: normalizeRouteMode(routing.mode),
@@ -568,6 +756,8 @@ function normalizeHomeMetrics(source) {
     cacheReadTokens: asPositiveInteger(raw.cacheReadTokens),
     cacheWriteTokens: asPositiveInteger(raw.cacheWriteTokens),
     cacheHitRate: asNullableRate(raw.cacheHitRate),
+    byProvider: normalizeUsageAttributionMap(raw.byProvider),
+    byProviderModel: normalizeUsageAttributionMap(raw.byProviderModel),
   };
 }
 
@@ -583,7 +773,8 @@ function buildConfigPayload(source = appState) {
     providerStreamIdleTimeout: normalized.providerStreamIdleTimeout,
     backendListenAddr: normalized.backendListenAddr,
     proxyListenAddr: normalized.proxyListenAddr,
-    modelAdapters: normalized.modelAdapters.map(({ id, ...adapter }) => adapter),
+    schemaVersion: 2,
+    providers: normalized.providers,
     routing: normalized.routing,
     homeMetrics: normalized.homeMetrics,
     lastAgentModelHash: normalized.lastAgentModelHash,
@@ -593,9 +784,11 @@ function buildConfigPayload(source = appState) {
 function applyConfigToState(config, { modelAdaptersOnly = false } = {}) {
   const normalized = normalizeConfig(config);
   if (modelAdaptersOnly) {
+    appState.providers = normalized.providers;
     appState.modelAdapters = normalized.modelAdapters;
     return normalized;
   }
+  appState.providers = normalized.providers;
   appState.modelAdapters = normalized.modelAdapters;
   appState.configBackendListenAddr = normalized.backendListenAddr;
   appState.configProxyListenAddr = normalized.proxyListenAddr;
@@ -615,6 +808,13 @@ async function persistConfigPayload(config, { modelAdaptersOnly = false } = {}) 
     return {
       ok: false,
       error: configValidationError,
+    };
+  }
+  const providerValidationError = validateProviders(payload.providers);
+  if (providerValidationError) {
+    return {
+      ok: false,
+      error: providerValidationError,
     };
   }
   const validationError = validateModelAdapters(payload.modelAdapters);
@@ -826,6 +1026,7 @@ const cachedConfig = normalizeConfig(cachedState);
 
 export const appState = reactive({
   appVersion: "",
+  providers: cachedConfig.providers,
   modelAdapters: cachedConfig.modelAdapters,
   modelAdapterTestResults: {},
   configBackendListenAddr: cachedConfig.backendListenAddr,
@@ -1087,6 +1288,39 @@ export function startModelAdapterTest(adapter) {
 
 export async function runModelAdapterTest(adapter) {
   return startModelAdapterTest(adapter);
+}
+
+export async function saveProviders(providers) {
+  const currentConfig = await loadPersistedUserConfig();
+  return persistConfigPayload({
+    ...currentConfig,
+    providers: normalizeProviders(providers),
+  });
+}
+
+export async function discoverProviderModels(provider) {
+  const normalized = normalizeProvider(provider);
+  const result = await fetchProviderModels(normalized);
+  return {
+    ...result,
+    provider: mergeDiscoveredProviderModels(normalized, result?.models),
+  };
+}
+
+export async function runProviderConnectivityTest(provider) {
+  return testProviderConnectivity(normalizeProvider(provider));
+}
+
+export async function runProviderModelTest(provider, model) {
+  const result = await testProviderModel(normalizeProvider(provider), normalizeProviderModel(model));
+  const normalizedResult = normalizeModelAdapterTestResult(result);
+  if (normalizedResult.adapterID) {
+    appState.modelAdapterTestResults = {
+      ...appState.modelAdapterTestResults,
+      [normalizedResult.adapterID]: normalizedResult,
+    };
+  }
+  return normalizedResult;
 }
 
 export async function persistUserConfig() {

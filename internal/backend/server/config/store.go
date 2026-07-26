@@ -120,7 +120,9 @@ func (store *Store) saveLocked(normalized Config) error {
 		return fmt.Errorf("创建用户配置目录失败: %w", err)
 	}
 
-	data, err := yaml.Marshal(normalized)
+	persisted := normalized
+	persisted.ModelAdapters = nil
+	data, err := yaml.Marshal(persisted)
 	if err != nil {
 		return fmt.Errorf("序列化用户配置失败: %w", err)
 	}
@@ -136,6 +138,9 @@ func (store *Store) saveLocked(normalized Config) error {
 }
 
 func shouldPersistNormalizedConfig(raw []byte, current Config, normalized Config) bool {
+	if current.SchemaVersion != normalized.SchemaVersion || yamlHasKey(raw, "modelAdapters") || !yamlHasKey(raw, "providers") {
+		return true
+	}
 	if !yamlHasKey(raw, "backendListenAddr") || !yamlHasKey(raw, "proxyListenAddr") {
 		return true
 	}

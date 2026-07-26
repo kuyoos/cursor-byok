@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	availableModelsDisableUnusedHours = 2400000
+	availableModelsDisableUnusedHours = 0
 	availableModelsUpgradeHours       = 2
 
 	modelRuntimeThinkingEffortParameterID = "thinking_effort"
@@ -703,32 +703,34 @@ func buildThinkingEffortParameterDefinitions(adapterType string) []map[string]an
 }
 
 func buildThinkingEffortVariants(adapterType string, channelID string, modelDisplayName string, tooltipData string, defaultThinkingEffort string) []map[string]any {
-	values := orderThinkingEffortValues(thinkingEffortValuesForAdapter(adapterType), defaultThinkingEffort)
-	channelID = strings.TrimSpace(channelID)
-	modelDisplayName = strings.TrimSpace(modelDisplayName)
-	variants := make([]map[string]any, 0, len(values))
-	for _, value := range values {
-		effortDisplayName := thinkingEffortDisplayName(value)
-		variantDisplayName := buildThinkingEffortVariantDisplayName(modelDisplayName, value)
-		variant := map[string]any{
-			"displayName":              variantDisplayName,
-			"displayNameOutsidePicker": variantDisplayName,
-			"isDefaultNonMaxConfig":    value == defaultThinkingEffort,
-			"isMaxMode":                false,
-			"parameterValues":          []map[string]any{{"id": modelRuntimeThinkingEffortParameterID, "value": value}},
-		}
-		if normalizeAvailableModelThinkingEffort(value, true, "") != "disabled" {
-			variant["tagline"] = effortDisplayName
-		}
-		if channelID != "" {
-			variant["variantStringRepresentation"] = channelID + ":" + value
-		}
-		if strings.TrimSpace(tooltipData) != "" {
-			variant["tooltipData"] = map[string]any{"markdownContent": tooltipData}
-		}
-		variants = append(variants, variant)
+	value := defaultThinkingEffortForPicker(adapterType, defaultThinkingEffort)
+	effortDisplayName := thinkingEffortDisplayName(value)
+	variantDisplayName := buildThinkingEffortVariantDisplayName(modelDisplayName, value)
+	variant := map[string]any{
+		"displayName":              variantDisplayName,
+		"displayNameOutsidePicker": variantDisplayName,
+		"isDefaultNonMaxConfig":    true,
+		"isMaxMode":                false,
+		"parameterValues":          []map[string]any{{"id": modelRuntimeThinkingEffortParameterID, "value": value}},
 	}
-	return variants
+	if normalizeAvailableModelThinkingEffort(value, true, "") != "disabled" {
+		variant["tagline"] = effortDisplayName
+	}
+	if channelID = strings.TrimSpace(channelID); channelID != "" {
+		variant["variantStringRepresentation"] = channelID + ":" + value
+	}
+	if tooltipData = strings.TrimSpace(tooltipData); tooltipData != "" {
+		variant["tooltipData"] = map[string]any{"markdownContent": tooltipData}
+	}
+	return []map[string]any{variant}
+}
+
+func defaultThinkingEffortForPicker(adapterType string, defaultThinkingEffort string) string {
+	fallback := "medium"
+	if strings.EqualFold(strings.TrimSpace(adapterType), "anthropic") {
+		fallback = "xhigh"
+	}
+	return normalizeAvailableModelThinkingEffort(defaultThinkingEffort, true, fallback)
 }
 
 func buildThinkingEffortVariantDisplayName(modelDisplayName string, effortValue string) string {

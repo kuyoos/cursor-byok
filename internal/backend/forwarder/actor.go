@@ -594,6 +594,8 @@ func (service *Service) applyProviderModelEvent(stream *ActiveStream, event mode
 		stream.ProviderUsage = turnUsageSnapshot{
 			Provider:          event.Provider,
 			Model:             event.Model,
+			ProviderID:        event.ProviderConfigID,
+			ModelConfigID:     event.ModelConfigID,
 			InputTokens:       event.InputTokens,
 			OutputTokens:      event.OutputTokens,
 			CacheReadTokens:   event.CacheReadTokens,

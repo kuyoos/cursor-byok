@@ -1635,6 +1635,8 @@ func (service *Service) generateCompactionSummary(ctx context.Context, stream *A
 			usage = turnUsageSnapshot{
 				Provider:          event.Provider,
 				Model:             event.Model,
+				ProviderID:        event.ProviderConfigID,
+				ModelConfigID:     event.ModelConfigID,
 				InputTokens:       event.InputTokens,
 				OutputTokens:      event.OutputTokens,
 				CacheReadTokens:   event.CacheReadTokens,

@@ -25,12 +25,14 @@ type UsageFileStore struct {
 }
 
 type usageFileDocument struct {
-	SchemaVersion int                       `json:"schema_version"`
-	UpdatedAt     time.Time                 `json:"updated_at"`
-	Totals        usageFileTotals           `json:"totals"`
-	Daily         []usageFileDaily          `json:"daily"`
-	RecentEvents  []usageFileEvent          `json:"recent_events"`
-	EventIndex    map[string]usageFileEvent `json:"event_index,omitempty"`
+	SchemaVersion   int                              `json:"schema_version"`
+	UpdatedAt       time.Time                        `json:"updated_at"`
+	Totals          usageFileTotals                  `json:"totals"`
+	Daily           []usageFileDaily                 `json:"daily"`
+	ByProvider      map[string]usageFileAttribution  `json:"by_provider,omitempty"`
+	ByProviderModel map[string]usageFileAttribution  `json:"by_provider_model,omitempty"`
+	RecentEvents    []usageFileEvent                 `json:"recent_events"`
+	EventIndex      map[string]usageFileEvent        `json:"event_index,omitempty"`
 }
 
 type usageFileTotals struct {
@@ -58,10 +60,25 @@ type usageFileDaily struct {
 	TotalTokens       int64  `json:"total_tokens"`
 }
 
+type usageFileAttribution struct {
+	ProviderID       string `json:"provider_id,omitempty"`
+	ModelConfigID    string `json:"model_config_id,omitempty"`
+	Model            string `json:"model,omitempty"`
+	ProviderCalls    int64  `json:"provider_calls"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+}
+
 type usageFileEvent struct {
 	EventID          string    `json:"event_id"`
 	Kind             string    `json:"kind,omitempty"`
 	Status           string    `json:"status,omitempty"`
+	ProviderID       string    `json:"provider_id,omitempty"`
+	ModelConfigID    string    `json:"model_config_id,omitempty"`
+	Model             string    `json:"model,omitempty"`
 	At               time.Time `json:"at"`
 	InputTokens      int64     `json:"input_tokens"`
 	OutputTokens     int64     `json:"output_tokens"`
@@ -97,6 +114,9 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	}
 	event.Kind = normalizeUsageEventKind(event.Kind)
 	event.Status = strings.TrimSpace(event.Status)
+	event.ProviderID = strings.TrimSpace(event.ProviderID)
+	event.ModelConfigID = strings.TrimSpace(event.ModelConfigID)
+	event.Model = strings.TrimSpace(event.Model)
 	if event.At.IsZero() {
 		event.At = time.Now().UTC()
 	} else {
@@ -124,11 +144,19 @@ func (store *UsageFileStore) UpsertEvent(event usageFileEvent) error {
 	if doc.EventIndex == nil {
 		doc.EventIndex = make(map[string]usageFileEvent)
 	}
+	if doc.ByProvider == nil {
+		doc.ByProvider = make(map[string]usageFileAttribution)
+	}
+	if doc.ByProviderModel == nil {
+		doc.ByProviderModel = make(map[string]usageFileAttribution)
+	}
 	oldEvent, found := doc.EventIndex[event.EventID]
 	if found {
 		applyUsageFileDelta(&doc, oldEvent.At, negateUsageFileDelta(usageFileEventDelta(oldEvent)))
+		applyUsageAttributionDelta(&doc, oldEvent, -1)
 	}
 	applyUsageFileDelta(&doc, event.At, usageFileEventDelta(event))
+	applyUsageAttributionDelta(&doc, event, 1)
 	doc.RecentEvents = upsertRecentUsageEvent(doc.RecentEvents, event)
 	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
 	doc.EventIndex = buildUsageEventIndex(doc.RecentEvents)
@@ -190,10 +218,12 @@ func readUsageFileDocument(path string) (usageFileDocument, error) {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return usageFileDocument{
-				SchemaVersion: usageFileSchemaVersion,
-				Daily:         make([]usageFileDaily, 0),
-				RecentEvents:  make([]usageFileEvent, 0),
-				EventIndex:    make(map[string]usageFileEvent),
+				SchemaVersion:   usageFileSchemaVersion,
+				Daily:           make([]usageFileDaily, 0),
+				ByProvider:      make(map[string]usageFileAttribution),
+				ByProviderModel: make(map[string]usageFileAttribution),
+				RecentEvents:    make([]usageFileEvent, 0),
+				EventIndex:      make(map[string]usageFileEvent),
 			}, nil
 		}
 		return usageFileDocument{}, fmt.Errorf("read usage file: %w", err)
@@ -208,6 +238,12 @@ func readUsageFileDocument(path string) (usageFileDocument, error) {
 	doc.RecentEvents = trimRecentUsageEvents(doc.RecentEvents, usageRecentEventLimit)
 	if len(doc.EventIndex) == 0 {
 		doc.EventIndex = buildUsageEventIndex(doc.RecentEvents)
+	}
+	if doc.ByProvider == nil {
+		doc.ByProvider = make(map[string]usageFileAttribution)
+	}
+	if doc.ByProviderModel == nil {
+		doc.ByProviderModel = make(map[string]usageFileAttribution)
 	}
 	return doc, nil
 }
@@ -333,6 +369,43 @@ func applyUsageDailyDelta(item *usageFileDaily, delta usageFileDelta) {
 	item.CacheReadTokens = clampNonNegativeInt64(item.CacheReadTokens + delta.cacheReadTokens)
 	item.CacheWriteTokens = clampNonNegativeInt64(item.CacheWriteTokens + delta.cacheWriteTokens)
 	item.TotalTokens = clampNonNegativeInt64(item.TotalTokens + delta.totalTokens)
+}
+
+func applyUsageAttributionDelta(doc *usageFileDocument, event usageFileEvent, direction int64) {
+	if doc == nil || normalizeUsageEventKind(event.Kind) != usageEventKindProvider {
+		return
+	}
+	providerID := strings.TrimSpace(event.ProviderID)
+	if providerID == "" {
+		return
+	}
+	delta := usageFileEventDelta(event)
+	apply := func(item usageFileAttribution) usageFileAttribution {
+		item.ProviderCalls = clampNonNegativeInt64(item.ProviderCalls + direction*delta.providerCalls)
+		item.InputTokens = clampNonNegativeInt64(item.InputTokens + direction*delta.inputTokens)
+		item.OutputTokens = clampNonNegativeInt64(item.OutputTokens + direction*delta.outputTokens)
+		item.CacheReadTokens = clampNonNegativeInt64(item.CacheReadTokens + direction*delta.cacheReadTokens)
+		item.CacheWriteTokens = clampNonNegativeInt64(item.CacheWriteTokens + direction*delta.cacheWriteTokens)
+		item.TotalTokens = clampNonNegativeInt64(item.TotalTokens + direction*delta.totalTokens)
+		return item
+	}
+
+	provider := doc.ByProvider[providerID]
+	provider.ProviderID = providerID
+	doc.ByProvider[providerID] = apply(provider)
+
+	modelConfigID := strings.TrimSpace(event.ModelConfigID)
+	if modelConfigID == "" {
+		return
+	}
+	modelKey := providerID + "/" + modelConfigID
+	model := doc.ByProviderModel[modelKey]
+	model.ProviderID = providerID
+	model.ModelConfigID = modelConfigID
+	if name := strings.TrimSpace(event.Model); name != "" {
+		model.Model = name
+	}
+	doc.ByProviderModel[modelKey] = apply(model)
 }
 
 func clampNonNegativeInt64(value int64) int64 {

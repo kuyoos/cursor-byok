@@ -124,8 +124,8 @@ function ensureAnthropicThinkingEffort() {
 }
 
 const fieldTips = {
-  displayName: "仅用于界面展示，便于你区分不同模型。",
-  modelID: "请求实际发送给服务端的模型名称，例如 gpt-4.1 或 claude-sonnet。",
+  displayName: "仅用于界面展示，便于你区分不同模型。模型标识填写多行时，可用 {model} 作为模型名占位符。",
+  modelID: "请求实际发送给服务端的模型名称。可填写单个模型，也可用换行、英文逗号或中文逗号分隔多个模型。",
   baseURL: "模型服务的 API 根地址，通常为兼容 OpenAI 或 Anthropic 的接口入口。",
   apiKey: "调用该模型服务需要使用的访问密钥。",
   contextWindowTokens: "模型单次可接受的最大上下文 Token 数。留空时使用默认值。",
@@ -334,12 +334,12 @@ onMounted(async () => {
               <Tooltip :content="fieldTips.modelID" />
               <span>模型标识</span>
             </span>
-            <input
+            <textarea
               v-model="draft.modelID"
-              type="text"
-              placeholder="例如：gpt-4.1"
-              class="h-9 rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
-            />
+              rows="3"
+              placeholder="例如：gpt-4.1 或每行一个模型"
+              class="min-h-[72px] rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 py-2 text-sm text-[#e5e5e5] outline-none focus:border-[#10AD5D]"
+            ></textarea>
           </label>
 
           <label class="flex flex-col gap-1">

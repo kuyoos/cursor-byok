@@ -84,6 +84,10 @@ type StreamRequest struct {
 	APIKey string
 	// ProviderModelID 表示 provider 侧真实模型标识。
 	ProviderModelID string
+	// ProviderConfigID 表示稳定的中转站配置 ID。
+	ProviderConfigID string
+	// ModelConfigID 表示稳定的模型配置 ID。
+	ModelConfigID string
 	// ResolvedChannelID 表示本次请求实际命中的 adapter 渠道 ID。
 	ResolvedChannelID string
 	// ResolvedChannelName 表示本次请求实际命中的 adapter 展示名。
@@ -182,6 +186,10 @@ type ModelEvent struct {
 	Provider string
 	// Model 表示当前事件所属模型标识。
 	Model string
+	// ProviderConfigID 表示稳定的中转站配置 ID。
+	ProviderConfigID string
+	// ModelConfigID 表示稳定的模型配置 ID。
+	ModelConfigID string
 	// Text 表示文本增量。
 	Text string
 	// ThinkingStyle 表示思考样式。

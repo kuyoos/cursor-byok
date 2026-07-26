@@ -15,6 +15,8 @@ import (
 type turnUsageSnapshot struct {
 	Provider          string
 	Model             string
+	ProviderID        string
+	ModelConfigID     string
 	InputTokens       int64
 	OutputTokens      int64
 	CacheReadTokens   int64
@@ -345,6 +347,9 @@ func (service *Service) recordTurnUsageSnapshot(stream *ActiveStream, conversati
 		if err := service.usageStore.UpsertEvent(usageFileEvent{
 			EventID:          usageEventID(requestID, effectiveModelCallID),
 			Kind:             usageEventKindProvider,
+			ProviderID:       usage.ProviderID,
+			ModelConfigID:    usage.ModelConfigID,
+			Model:            modelName,
 			At:               lastEventAt,
 			InputTokens:      usage.InputTokens,
 			OutputTokens:     usage.OutputTokens,

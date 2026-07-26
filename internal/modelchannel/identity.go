@@ -71,6 +71,13 @@ func OpenAIEndpointShape(endpoint string) string {
 	}
 }
 
+func BuildStableChannelID(providerID string, modelConfigID string) string {
+	return buildChannelID([]string{
+		strings.TrimSpace(providerID),
+		strings.TrimSpace(modelConfigID),
+	})
+}
+
 func BuildLegacyChannelID(baseURL string, modelID string, apiKey string, name string) string {
 	return buildChannelID([]string{
 		strings.TrimSpace(baseURL),

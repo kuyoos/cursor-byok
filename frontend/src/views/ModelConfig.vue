@@ -1,322 +1,273 @@
 <script setup>
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
-import ModelAdapterTestCard from "@/components/ModelAdapterTestCard.vue";
+import Input from "@/components/ui/Input.vue";
 import { showModal } from "@/composables/useModal";
 import {
   appState,
-  createEmptyModelAdapter,
-  deleteModelAdapterAt,
-  duplicateModelAdapterAt,
-  getModelAdapterTestResultByID,
-  openModelEditorWindow,
+  createEmptyProvider,
+  discoverProviderModels,
+  normalizeProviders,
   reloadUserConfig,
-  runModelAdapterTest,
-  startModelAdapterTest,
+  runProviderConnectivityTest,
+  runProviderModelTest,
+  saveProviders,
+  syncHomeMetrics,
   toUserError,
 } from "@/state/appState";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { formatCompactInteger } from "@/utils/numberFormat";
+import { computed, onMounted, ref } from "vue";
 
-const BATCH_TEST_CONCURRENCY = 10;
+const drafts = ref([]);
+const loading = ref(true);
+const saving = ref(false);
+const search = ref({});
+const syncing = ref({});
+const connectivity = ref({});
+const modelTests = ref({});
 
-const typeTabs = [
-  { label: "OpenAI", value: "openai", icon: "icon-[bxl--openai]" },
-  { label: "Anthropic", value: "anthropic", icon: "icon-[logos--claude-icon]" },
-];
+const enabledCount = computed(() => drafts.value.reduce(
+  (total, provider) => total + provider.models.filter((model) => model.enabled).length,
+  0,
+));
 
-const activeType = ref("openai");
-const batchTesting = ref(false);
-const batchStopping = ref(false);
-const batchTotal = ref(0);
-const batchCompleted = ref(0);
-const batchActiveCalls = new Set();
-let batchStopRequested = false;
-
-const filteredAdapters = computed(() =>
-  appState.modelAdapters.filter((adapter) => adapter.type === activeType.value),
-);
-const batchButtonText = computed(() => {
-  if (batchStopping.value) {
-    return "停止中...";
-  }
-  if (!batchTesting.value) {
-    return "测试全部";
-  }
-  return `停止测试 ${batchCompleted.value}/${batchTotal.value}`;
-});
-
-watch(
-  () => appState.modelAdapters,
-  (adapters) => {
-    if (adapters.some((adapter) => adapter.type === activeType.value)) {
-      return;
-    }
-    const fallback = typeTabs.find((tab) => adapters.some((adapter) => adapter.type === tab.value));
-    activeType.value = fallback?.value ?? "openai";
-  },
-  { deep: true, immediate: true },
-);
-
-async function showActionError(title, error) {
-  await showModal({
-    title,
-    content: String(error || "服务错误").trim() || "服务错误",
-  });
+function providerKey(provider, index) {
+  return provider.id || `draft-${index}`;
 }
 
-function maskSecret(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return "-";
-  }
-  if (text.length <= 8) {
-    return `${"*".repeat(Math.max(text.length - 2, 0))}${text.slice(-2)}`;
-  }
-  return `${text.slice(0, 4)}****${text.slice(-4)}`;
+function modelKey(provider, model, providerIndex, modelIndex) {
+  return `${providerKey(provider, providerIndex)}/${model.id || model.modelID || modelIndex}`;
 }
 
-function typeLabel(type) {
-  return type === "anthropic" ? "Anthropic" : "OpenAI";
-}
-
-function formatHost(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return "-";
-  }
-  try {
-    const parsed = new URL(text);
-    return parsed.host || text;
-  } catch {
-    return text.replace(/^https?:\/\//, "");
-  }
-}
-
-async function openEditor(index = -1) {
-  const adapter = index >= 0
-    ? appState.modelAdapters[index]
-    : {
-        ...createEmptyModelAdapter(),
-        type: activeType.value,
-      };
-  try {
-    await openModelEditorWindow(index, adapter);
-  } catch (error) {
-    await showActionError("打开失败", toUserError(error));
-  }
-}
-
-async function handleDeleteModelAdapter(index) {
-  const target = appState.modelAdapters[index];
-  if (!target) {
-    await showActionError("删除失败", "模型配置不存在，无法删除");
-    return;
-  }
-  const result = await deleteModelAdapterAt(index);
-  if (!result.ok) {
-    await showActionError("删除失败", result.error);
-  }
-}
-
-async function handleDuplicateModelAdapter(index) {
-  const target = appState.modelAdapters[index];
-  if (!target) {
-    await showActionError("复制失败", "模型配置不存在，无法复制");
-    return;
-  }
-  const result = await duplicateModelAdapterAt(index);
-  if (!result.ok) {
-    await showActionError("复制失败", result.error);
-  }
-}
-
-function getAdapterTestResult(adapter) {
-  return getModelAdapterTestResultByID(adapter?.id);
-}
-
-function isAdapterTesting(adapter) {
-  return getAdapterTestResult(adapter)?.status === "running";
-}
-
-async function handleTestModelAdapter(adapter) {
-  try {
-    await runModelAdapterTest(adapter);
-  } catch (_error) {
-    // 失败结果会通过事件同步到界面，这里不再额外弹窗打断用户。
-  }
-}
-
-function isCancelError(error) {
-  return String(error?.name || "").trim() === "CancelError";
-}
-
-async function stopBatchTesting() {
-  if (!batchTesting.value || batchStopping.value) {
-    return;
-  }
-  batchStopRequested = true;
-  batchStopping.value = true;
-  const activeCalls = Array.from(batchActiveCalls);
-  await Promise.allSettled(
-    activeCalls.map((call) => (typeof call?.cancel === "function" ? call.cancel("batch-stop") : undefined)),
+function visibleModels(provider, index) {
+  const term = String(search.value[providerKey(provider, index)] || "").trim().toLowerCase();
+  if (!term) return provider.models;
+  return provider.models.filter((model) =>
+    `${model.modelID} ${model.displayName}`.toLowerCase().includes(term),
   );
 }
 
-async function handleTestAllModelAdapters() {
-  if (batchTesting.value) {
-    await stopBatchTesting();
-    return;
-  }
-  const adapters = filteredAdapters.value.slice();
-  if (adapters.length === 0) {
-    return;
-  }
-  batchStopRequested = false;
-  batchTesting.value = true;
-  batchStopping.value = false;
-  batchTotal.value = adapters.length;
-  batchCompleted.value = 0;
-  let nextIndex = 0;
+function providerUsage(provider) {
+  return appState.homeMetrics.byProvider?.[provider.id] || {
+    providerCalls: 0,
+    totalTokens: 0,
+  };
+}
+
+function providerSummary(provider) {
+  const enabled = provider.models.filter((model) => model.enabled).length;
+  const available = provider.models.filter((model) => model.available).length;
+  const usage = providerUsage(provider);
+  return `${enabled} 个已启用 · ${available} 个可用 · ${formatCompactInteger(usage.totalTokens)} Tokens · ${formatCompactInteger(usage.providerCalls)} 次调用`;
+}
+
+function addProvider() {
+  drafts.value.push(createEmptyProvider());
+}
+
+async function removeProvider(index) {
+  const provider = drafts.value[index];
+  const enabled = provider?.models?.filter((model) => model.enabled).length || 0;
+  const confirmed = await showModal({
+    title: "删除中转站",
+    content: `删除“${provider?.name || "未命名中转站"}”将停用 ${enabled} 个模型。历史用量不会删除。`,
+    confirmText: "删除",
+    showCancel: true,
+  });
+  if (confirmed === false) return;
+  drafts.value.splice(index, 1);
+}
+
+async function showError(title, error) {
+  await showModal({ title, content: toUserError(error) });
+}
+
+async function fetchModels(provider, index) {
+  const key = providerKey(provider, index);
+  syncing.value[key] = true;
   try {
-    const workers = Array.from({ length: Math.min(BATCH_TEST_CONCURRENCY, adapters.length) }, async () => {
-      while (!batchStopRequested) {
-        const currentIndex = nextIndex;
-        nextIndex += 1;
-        if (currentIndex >= adapters.length) {
-          return;
-        }
-        const adapter = adapters[currentIndex];
-        const call = startModelAdapterTest(adapter);
-        batchActiveCalls.add(call);
-        try {
-          await call;
-        } catch (error) {
-          if (!isCancelError(error) && !batchStopRequested) {
-            // 单个失败结果由卡片自行展示，这里继续后续测试。
-          }
-        } finally {
-          batchActiveCalls.delete(call);
-          batchCompleted.value += 1;
-        }
-      }
-    });
-    await Promise.allSettled(workers);
+    const result = await discoverProviderModels(provider);
+    drafts.value.splice(index, 1, result.provider);
+    connectivity.value[key] = {
+      reachable: true,
+      statusCode: result.statusCode,
+      modelCount: result.models.length,
+      durationMS: result.durationMS,
+      error: "",
+    };
+  } catch (error) {
+    await showError("获取模型失败", error);
   } finally {
-    batchActiveCalls.clear();
-    batchStopRequested = false;
-    batchTesting.value = false;
-    batchStopping.value = false;
+    syncing.value[key] = false;
+  }
+}
+
+async function testConnectivity(provider, index) {
+  const key = providerKey(provider, index);
+  connectivity.value[key] = { testing: true };
+  try {
+    connectivity.value[key] = await runProviderConnectivityTest(provider);
+  } catch (error) {
+    connectivity.value[key] = { reachable: false, error: toUserError(error) };
+  }
+}
+
+async function testModel(provider, model, providerIndex, modelIndex) {
+  const key = modelKey(provider, model, providerIndex, modelIndex);
+  modelTests.value[key] = { status: "running", summaryText: "测试中..." };
+  try {
+    modelTests.value[key] = await runProviderModelTest(provider, model);
+  } catch (error) {
+    modelTests.value[key] = { status: "error", summaryText: toUserError(error) };
+  }
+}
+
+function setVisibleEnabled(provider, index, enabled) {
+  const visible = new Set(visibleModels(provider, index));
+  provider.models.forEach((model) => {
+    if (visible.has(model)) model.enabled = enabled;
+  });
+}
+
+function connectionText(provider, index) {
+  const state = connectivity.value[providerKey(provider, index)];
+  if (!state) return "未测试";
+  if (state.testing) return "测试中...";
+  if (!state.reachable) return state.error || "不可访问";
+  return `可访问 · HTTP ${state.statusCode} · ${state.modelCount} 个模型 · ${state.durationMS} ms`;
+}
+
+function connectionClass(provider, index) {
+  const state = connectivity.value[providerKey(provider, index)];
+  if (!state || state.testing) return "text-[#a3a3a3]";
+  return state.reachable ? "text-[#4ade80]" : "text-[#f87171]";
+}
+
+async function applyChanges() {
+  saving.value = true;
+  try {
+    const result = await saveProviders(drafts.value);
+    if (!result.ok) {
+      await showError("保存失败", result.error);
+      return;
+    }
+    drafts.value = normalizeProviders(appState.providers);
+  } catch (error) {
+    await showError("保存失败", error);
+  } finally {
+    saving.value = false;
   }
 }
 
 onMounted(async () => {
-  await reloadUserConfig({ modelAdaptersOnly: true }).catch(() => { });
-});
-
-onBeforeUnmount(() => {
-  void stopBatchTesting();
+  try {
+    const config = await reloadUserConfig();
+    drafts.value = normalizeProviders(config.providers);
+    await syncHomeMetrics().catch(() => {});
+  } catch (error) {
+    await showError("加载失败", error);
+  } finally {
+    loading.value = false;
+  }
 });
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col p-4 pt-0 text-[#e5e5e5] overflow-hidden">
-    <div class="shrink-0 pb-4">
-      <div class="flex items-center justify-between gap-4">
-        <div class="center-row gap-2">
-          <button
-            v-for="tab in typeTabs"
-            :key="tab.value"
-            type="button"
-            class="center-row gap-2 rounded-[8px] border px-3 py-2 text-sm transition-colors duration-150"
-            :class="activeType === tab.value
-              ? 'border-[#1ca35a] bg-[#123322] text-white'
-              : 'border-[#343434] bg-[#252525] text-[#a3a3a3] hover:border-[#4a4a4a] hover:text-[#e5e5e5]'"
-            @click="activeType = tab.value"
-          >
-            <span :class="[tab.icon, 'text-[16px]']"></span>
-            <span>{{ tab.label }}</span>
-          </button>
-        </div>
-        <div class="center-row gap-2">
-          <Button
-            variant="default"
-            :disabled="appState.configSaving || (!batchTesting && filteredAdapters.length === 0)"
-            @click="handleTestAllModelAdapters"
-          >
-            {{ batchButtonText }}
-          </Button>
-          <Button variant="primary" :disabled="appState.configSaving || batchTesting" @click="openEditor()">新增模型</Button>
-        </div>
+  <div class="flex h-full min-h-0 flex-col overflow-hidden px-4 pb-4 text-[#e5e5e5]">
+    <div class="flex shrink-0 items-center justify-between gap-4 pb-4">
+      <div>
+        <div class="text-base font-medium text-white">模型中转站</div>
+        <div class="mt-1 text-xs text-[#8f8f8f]">{{ drafts.length }} 个中转站 · {{ enabledCount }} 个模型将显示在 Cursor</div>
+      </div>
+      <div class="flex items-center gap-2">
+        <Button variant="default" :disabled="saving" @click="addProvider">新增中转站</Button>
+        <Button variant="primary" :disabled="saving || loading" @click="applyChanges">
+          {{ saving ? "应用中..." : "应用更改" }}
+        </Button>
       </div>
     </div>
 
-    <div class="min-h-0 flex-1">
-      <div v-if="filteredAdapters.length === 0"
-        class="flex h-full min-h-[220px] items-center justify-center rounded-[8px] border border-dashed border-[#3a3a3a] bg-[#232323] px-4 text-sm text-[#a3a3a3]">
-        当前还没有配置任何 {{ typeLabel(activeType) }} 模型。
-      </div>
+    <div v-if="loading" class="flex flex-1 items-center justify-center text-sm text-[#a3a3a3]">加载中...</div>
+    <div v-else-if="drafts.length === 0" class="flex flex-1 items-center justify-center rounded-[8px] border border-dashed border-[#3a3a3a] text-sm text-[#a3a3a3]">
+      尚未配置中转站。新增后可自动获取模型列表。
+    </div>
 
-      <div v-else class="h-full min-h-0 overflow-y-auto pr-1">
-        <div class="grid gap-3 pb-1 [grid-template-columns:repeat(auto-fill,minmax(250px,1fr))]">
-          <Card
-            v-for="(adapter, index) in filteredAdapters"
-            :key="adapter.id || `${adapter.baseURL}-${adapter.modelID}-${index}`"
-          >
-            <div class="flex h-full min-h-[154px] flex-col justify-between gap-3">
-              <div class="flex flex-col gap-2.5">
-                <div class="flex items-start justify-between gap-3">
-                  <div class="min-w-0 flex-1">
-                    <div class="truncate text-base font-medium text-white">{{ adapter.displayName }}</div>
-                    <div class="mt-1 truncate text-sm text-[#8f8f8f]">{{ adapter.modelID }}</div>
-                    <div v-if="adapter.type === 'openai'" class="mt-0.5 truncate text-xs text-[#737373]">
-                      {{ adapter.openAIEndpoint || "/v1/responses" }}
-                    </div>
-                  </div>
-                  <span
-                    class="center-row shrink-0 gap-1 rounded-[999px] border border-[#3f3f3f] px-[7px] py-[4px] text-[11px] font-medium text-[#cfcfcf]"
-                  >
-                    <span class="icon-[bxl--openai] text-[14px] !text-white" v-if="adapter.type === 'openai'"></span>
-                    <span class="icon-[logos--claude-icon] text-[14px]" v-else></span>
-                    <span>{{ typeLabel(adapter.type) }}</span>
-                  </span>
-                </div>
+    <div v-else class="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+      <Card v-for="(provider, providerIndex) in drafts" :key="providerKey(provider, providerIndex)">
+        <div class="space-y-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-sm font-medium text-white">{{ provider.name || "未命名中转站" }}</div>
+              <div class="mt-1 truncate text-xs text-[#8f8f8f]">{{ providerSummary(provider) }}</div>
+            </div>
+            <Button variant="text" :disabled="saving" @click="removeProvider(providerIndex)">删除</Button>
+          </div>
 
-                <div class="grid grid-cols-2 gap-2 text-sm text-[#a3a3a3]">
-                  <div class="rounded-[8px] bg-[#232323] px-3 py-2">
-                    <div class="text-[11px] uppercase tracking-[0.08em] text-[#666]">Host</div>
-                    <div class="mt-1 truncate text-[#d4d4d4]" :title="adapter.baseURL">{{ formatHost(adapter.baseURL) }}</div>
-                  </div>
-                  <div class="rounded-[8px] bg-[#232323] px-3 py-2">
-                    <div class="text-[11px] uppercase tracking-[0.08em] text-[#666]">API Key</div>
-                    <div class="mt-1 truncate text-[#d4d4d4]">{{ maskSecret(adapter.apiKey) }}</div>
-                  </div>
-                </div>
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <label class="space-y-1 text-xs text-[#a3a3a3]">
+                <span>中转站名称</span>
+                <input v-model="provider.name" class="h-9 w-full rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-white outline-none focus:border-[#10AD5D]" placeholder="例如：主中转站" />
+              </label>
+              <label class="space-y-1 text-xs text-[#a3a3a3]">
+                <span>协议</span>
+                <select v-model="provider.type" class="h-9 w-full rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-white outline-none focus:border-[#10AD5D]">
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                </select>
+              </label>
+              <label class="space-y-1 text-xs text-[#a3a3a3]">
+                <span>接口地址</span>
+                <input v-model="provider.baseURL" class="h-9 w-full rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-white outline-none focus:border-[#10AD5D]" placeholder="https://example.com/v1" />
+              </label>
+              <label class="space-y-1 text-xs text-[#a3a3a3]">
+                <span>访问密钥</span>
+                <Input v-model="provider.apiKey" type="password" allow-visibility-toggle autocomplete="off" placeholder="sk-..." />
+              </label>
+              <label class="space-y-1 text-xs text-[#a3a3a3] md:col-span-2">
+                <span>模型发现路径</span>
+                <input v-model="provider.discoveryPath" class="h-9 w-full rounded-[6px] border border-[#3f3f3f] bg-[#232323] px-3 text-sm text-white outline-none focus:border-[#10AD5D]" placeholder="/models" />
+              </label>
+          </div>
 
-                <ModelAdapterTestCard
-                  compact
-                  title="测试"
-                  empty-text="未测试"
-                  :result="getAdapterTestResult(adapter)"
-                />
-              </div>
+          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-[#343434] pt-3">
+            <div class="text-xs" :class="connectionClass(provider, providerIndex)">{{ connectionText(provider, providerIndex) }}</div>
+            <div class="flex items-center gap-2">
+              <Button variant="default" :disabled="syncing[providerKey(provider, providerIndex)]" @click="testConnectivity(provider, providerIndex)">测试连通性</Button>
+              <Button variant="default" :disabled="syncing[providerKey(provider, providerIndex)]" @click="fetchModels(provider, providerIndex)">
+                {{ syncing[providerKey(provider, providerIndex)] ? "获取中..." : "获取模型" }}
+              </Button>
+            </div>
+          </div>
 
-              <div class="center-row flex-wrap justify-end gap-2 border-t border-[#343434] pt-3">
-                <Button
-                  variant="default"
-                  :disabled="appState.configSaving || batchTesting || isAdapterTesting(adapter)"
-                  @click="handleTestModelAdapter(adapter)"
-                >
-                  {{ isAdapterTesting(adapter) ? "测试中..." : "测试" }}
-                </Button>
-                <Button variant="default" :disabled="appState.configSaving" @click="openEditor(appState.modelAdapters.indexOf(adapter))">编辑</Button>
-                <Button variant="default" :disabled="appState.configSaving" @click="handleDuplicateModelAdapter(appState.modelAdapters.indexOf(adapter))">复制</Button>
-                <Button variant="text" :disabled="appState.configSaving"
-                  @click="handleDeleteModelAdapter(appState.modelAdapters.indexOf(adapter))">删除</Button>
+          <div class="rounded-[8px] border border-[#343434] bg-[#232323]">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#343434] p-3">
+              <input v-model="search[providerKey(provider, providerIndex)]" class="h-8 min-w-[220px] flex-1 rounded-[6px] border border-[#3f3f3f] bg-[#1f1f1f] px-3 text-sm outline-none focus:border-[#10AD5D]" placeholder="搜索模型" />
+              <div class="flex gap-2">
+                <Button variant="text" @click="setVisibleEnabled(provider, providerIndex, true)">全选</Button>
+                <Button variant="text" @click="setVisibleEnabled(provider, providerIndex, false)">清空</Button>
               </div>
             </div>
-          </Card>
+
+            <div v-if="provider.models.length === 0" class="p-5 text-center text-sm text-[#777]">点击“获取模型”，或保存后重新编辑。</div>
+            <div v-else class="max-h-[320px] divide-y divide-[#343434] overflow-y-auto">
+              <div v-for="(model, modelIndex) in visibleModels(provider, providerIndex)" :key="model.id || model.modelID" class="flex items-center gap-3 px-3 py-2.5">
+                <input v-model="model.enabled" type="checkbox" class="size-4 shrink-0 accent-[#10AD5D]" />
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="truncate text-sm text-[#e5e5e5]">{{ model.displayName || model.modelID }}</span>
+                    <span v-if="!model.available" class="rounded bg-[#4a3215] px-1.5 py-0.5 text-[10px] text-[#fbbf24]">本次未发现</span>
+                  </div>
+                  <div class="truncate text-xs text-[#777]">{{ model.modelID }}</div>
+                </div>
+                <div class="max-w-[260px] truncate text-xs" :class="modelTests[modelKey(provider, model, providerIndex, modelIndex)]?.status === 'error' ? 'text-[#f87171]' : 'text-[#8f8f8f]'">
+                  {{ modelTests[modelKey(provider, model, providerIndex, modelIndex)]?.summaryText || "未测试" }}
+                </div>
+                <Button variant="text" :disabled="modelTests[modelKey(provider, model, providerIndex, modelIndex)]?.status === 'running'" @click="testModel(provider, model, providerIndex, modelIndex)">测试模型</Button>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      </Card>
     </div>
   </div>
 </template>

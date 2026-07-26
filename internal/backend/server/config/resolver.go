@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"cursor/internal/modelchannel"
 	legacyruntime "cursor/internal/runtime"
 )
 
@@ -27,16 +26,49 @@ func (manager *Manager) SelectChannelForModel(_ context.Context, modelID string)
 	return resolveModelAdapterChannel(adapters, modelID)
 }
 
+func resolveProjectedAdapterIndex(adapters []ModelAdapterConfig, requestedModel string) (int, bool) {
+	target := strings.TrimSpace(requestedModel)
+	if target == "" || target == "auto" || target == "fast" || target == "default" {
+		if len(adapters) == 0 {
+			return -1, false
+		}
+		return 0, true
+	}
+	for index, adapter := range adapters {
+		if strings.TrimSpace(adapter.ID) == target {
+			return index, true
+		}
+	}
+	legacyMatch := -1
+	for index, adapter := range adapters {
+		for _, legacyID := range adapter.LegacyChannelIDs {
+			if strings.TrimSpace(legacyID) != target {
+				continue
+			}
+			if legacyMatch >= 0 && legacyMatch != index {
+				return -1, false
+			}
+			legacyMatch = index
+		}
+	}
+	if legacyMatch >= 0 {
+		return legacyMatch, true
+	}
+	modelMatch := -1
+	for index, adapter := range adapters {
+		if strings.TrimSpace(adapter.ModelID) != target {
+			continue
+		}
+		if modelMatch >= 0 {
+			return -1, false
+		}
+		modelMatch = index
+	}
+	return modelMatch, modelMatch >= 0
+}
+
 func resolveModelAdapterChannel(adapters []ModelAdapterConfig, requestedModel string) (*legacyruntime.ResolvedChannel, error) {
-	matchIndex, ok := modelchannel.ResolveAdapterIndex(
-		adapters,
-		requestedModel,
-		func(adapter ModelAdapterConfig) string { return adapter.ID },
-		func(adapter ModelAdapterConfig) string { return adapter.ModelID },
-		func(adapter ModelAdapterConfig) string {
-			return modelchannel.BuildLegacyChannelID(adapter.BaseURL, adapter.ModelID, adapter.APIKey, adapter.DisplayName)
-		},
-	)
+	matchIndex, ok := resolveProjectedAdapterIndex(adapters, requestedModel)
 	if !ok {
 		return nil, legacyruntime.ErrChannelNotAvailable
 	}
@@ -44,6 +76,8 @@ func resolveModelAdapterChannel(adapters []ModelAdapterConfig, requestedModel st
 
 	resolved := &legacyruntime.ResolvedChannel{
 		ID:                          strings.TrimSpace(matched.ID),
+		ProviderID:                  strings.TrimSpace(matched.ProviderID),
+		ModelConfigID:               strings.TrimSpace(matched.ModelConfigID),
 		Name:                        strings.TrimSpace(matched.DisplayName),
 		GroupName:                   "local",
 		Code:                        strings.TrimSpace(matched.ID),
