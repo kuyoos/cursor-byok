@@ -490,6 +490,18 @@ export function normalizeProviderModel(source) {
   };
 }
 
+function selectedProviderModels(source) {
+  const models = asArray(source).map(normalizeProviderModel);
+  const selected = models.find((model) => model.enabled) || models[0];
+  return selected ? [{ ...selected, enabled: true }] : [];
+}
+
+export function buildProviderModelDisplayName(provider, model) {
+  const providerName = asString(provider?.name);
+  const modelID = asString(model?.modelID);
+  return providerName && modelID ? `${providerName}-${modelID}` : modelID;
+}
+
 export function normalizeProvider(source) {
   const raw = source && typeof source === "object" ? source : {};
   const type = asString(raw.type).toLowerCase();
@@ -502,7 +514,7 @@ export function normalizeProvider(source) {
     discoveryPath: asString(raw.discoveryPath) || "/models",
     customHeadersEnabled: asBoolean(raw.customHeadersEnabled),
     customHeadersJSON: asString(raw.customHeadersJSON) || CUSTOM_HEADERS_DEFAULT_JSON,
-    models: asArray(raw.models).map(normalizeProviderModel),
+    models: selectedProviderModels(raw.models),
   };
 }
 

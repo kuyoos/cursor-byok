@@ -5,7 +5,9 @@ import Input from "@/components/ui/Input.vue";
 import { showModal } from "@/composables/useModal";
 import {
   appState,
+  buildProviderModelDisplayName,
   createEmptyProvider,
+  createEmptyProviderModel,
   discoverProviderModels,
   normalizeProviders,
   reloadUserConfig,
@@ -21,30 +23,30 @@ import { computed, onMounted, ref } from "vue";
 const drafts = ref([]);
 const loading = ref(true);
 const saving = ref(false);
-const search = ref({});
+const fetchedModels = ref({});
+const customModelIDs = ref({});
 const syncing = ref({});
 const connectivity = ref({});
 const modelTests = ref({});
 
-const enabledCount = computed(() => drafts.value.reduce(
-  (total, provider) => total + provider.models.filter((model) => model.enabled).length,
-  0,
-));
+const enabledCount = computed(() => drafts.value.filter((provider) => provider.models.length > 0).length);
 
 function providerKey(provider, index) {
   return provider.id || `draft-${index}`;
 }
 
-function modelKey(provider, model, providerIndex, modelIndex) {
-  return `${providerKey(provider, providerIndex)}/${model.id || model.modelID || modelIndex}`;
+function selectedModel(provider) {
+  return provider.models[0] || null;
 }
 
-function visibleModels(provider, index) {
-  const term = String(search.value[providerKey(provider, index)] || "").trim().toLowerCase();
-  if (!term) return provider.models;
-  return provider.models.filter((model) =>
-    `${model.modelID} ${model.displayName}`.toLowerCase().includes(term),
-  );
+function modelKey(provider, model, providerIndex) {
+  return `${providerKey(provider, providerIndex)}/${model?.id || model?.modelID || "selected"}`;
+}
+
+function discoveredModels(provider, index) {
+  const key = providerKey(provider, index);
+  const selected = selectedModel(provider)?.modelID;
+  return [...new Set([...(fetchedModels.value[key] || []), selected].filter(Boolean))];
 }
 
 function providerUsage(provider) {
@@ -55,10 +57,10 @@ function providerUsage(provider) {
 }
 
 function providerSummary(provider) {
-  const enabled = provider.models.filter((model) => model.enabled).length;
-  const available = provider.models.filter((model) => model.available).length;
+  const model = selectedModel(provider);
   const usage = providerUsage(provider);
-  return `${enabled} 个已启用 · ${available} 个可用 · ${formatCompactInteger(usage.totalTokens)} Tokens · ${formatCompactInteger(usage.providerCalls)} 次调用`;
+  const selection = model ? `已选择 ${model.modelID}` : "未选择模型";
+  return `${selection} · ${formatCompactInteger(usage.totalTokens)} Tokens · ${formatCompactInteger(usage.providerCalls)} 次调用`;
 }
 
 function addProvider() {
@@ -87,7 +89,7 @@ async function fetchModels(provider, index) {
   syncing.value[key] = true;
   try {
     const result = await discoverProviderModels(provider);
-    drafts.value.splice(index, 1, result.provider);
+    fetchedModels.value[key] = result.models || [];
     connectivity.value[key] = {
       reachable: true,
       statusCode: result.statusCode,
@@ -122,11 +124,38 @@ async function testModel(provider, model, providerIndex, modelIndex) {
   }
 }
 
-function setVisibleEnabled(provider, index, enabled) {
-  const visible = new Set(visibleModels(provider, index));
-  provider.models.forEach((model) => {
-    if (visible.has(model)) model.enabled = enabled;
+function selectModel(provider, modelID) {
+  if (!modelID) {
+    provider.models = [];
+    return;
+  }
+  const current = selectedModel(provider);
+  if (current?.modelID === modelID) return;
+  const next = createEmptyProviderModel(modelID);
+  next.enabled = true;
+  provider.models = [next];
+}
+
+function addCustomModel(provider, index) {
+  const key = providerKey(provider, index);
+  const modelID = String(customModelIDs.value[key] || "").trim();
+  if (!modelID) return;
+  selectModel(provider, modelID);
+  customModelIDs.value[key] = "";
+}
+
+async function removeSelectedModel(provider, index) {
+  const model = selectedModel(provider);
+  if (!model) return;
+  const confirmed = await showModal({
+    title: "删除模型",
+    content: `删除“${model.modelID}”后，该中转站不会向 Cursor 提供任何模型。`,
+    confirmText: "删除",
+    showCancel: true,
   });
+  if (confirmed === false) return;
+  provider.models = [];
+  delete modelTests.value[modelKey(provider, model, index)];
 }
 
 function connectionText(provider, index) {
@@ -239,32 +268,46 @@ onMounted(async () => {
             </div>
           </div>
 
-          <div class="rounded-[8px] border border-[#343434] bg-[#232323]">
-            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#343434] p-3">
-              <input v-model="search[providerKey(provider, providerIndex)]" class="h-8 min-w-[220px] flex-1 rounded-[6px] border border-[#3f3f3f] bg-[#1f1f1f] px-3 text-sm outline-none focus:border-[#10AD5D]" placeholder="搜索模型" />
-              <div class="flex gap-2">
-                <Button variant="text" @click="setVisibleEnabled(provider, providerIndex, true)">全选</Button>
-                <Button variant="text" @click="setVisibleEnabled(provider, providerIndex, false)">清空</Button>
-              </div>
+          <div class="space-y-3 rounded-[8px] border border-[#343434] bg-[#232323] p-3">
+            <div class="text-sm font-medium text-white">Cursor 模型</div>
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+              <label class="space-y-1 text-xs text-[#a3a3a3]">
+                <span>从已获取模型中选择</span>
+                <select
+                  :value="selectedModel(provider)?.modelID || ''"
+                  class="h-9 w-full rounded-[6px] border border-[#3f3f3f] bg-[#1f1f1f] px-3 text-sm text-white outline-none focus:border-[#10AD5D]"
+                  @change="selectModel(provider, $event.target.value)"
+                >
+                  <option value="">暂不提供模型</option>
+                  <option v-for="modelID in discoveredModels(provider, providerIndex)" :key="modelID" :value="modelID">{{ modelID }}</option>
+                </select>
+              </label>
+              <Button variant="text" :disabled="!selectedModel(provider)" @click="removeSelectedModel(provider, providerIndex)">删除模型</Button>
             </div>
 
-            <div v-if="provider.models.length === 0" class="p-5 text-center text-sm text-[#777]">点击“获取模型”，或保存后重新编辑。</div>
-            <div v-else class="max-h-[320px] divide-y divide-[#343434] overflow-y-auto">
-              <div v-for="(model, modelIndex) in visibleModels(provider, providerIndex)" :key="model.id || model.modelID" class="flex items-center gap-3 px-3 py-2.5">
-                <input v-model="model.enabled" type="checkbox" class="size-4 shrink-0 accent-[#10AD5D]" />
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-2">
-                    <span class="truncate text-sm text-[#e5e5e5]">{{ model.displayName || model.modelID }}</span>
-                    <span v-if="!model.available" class="rounded bg-[#4a3215] px-1.5 py-0.5 text-[10px] text-[#fbbf24]">本次未发现</span>
-                  </div>
-                  <div class="truncate text-xs text-[#777]">{{ model.modelID }}</div>
+            <div class="flex flex-wrap gap-2">
+              <input
+                v-model="customModelIDs[providerKey(provider, providerIndex)]"
+                class="h-9 min-w-[220px] flex-1 rounded-[6px] border border-[#3f3f3f] bg-[#1f1f1f] px-3 text-sm text-white outline-none focus:border-[#10AD5D]"
+                placeholder="手动输入专属模型 ID，例如 gpt-5.5"
+                @keyup.enter="addCustomModel(provider, providerIndex)"
+              />
+              <Button variant="default" @click="addCustomModel(provider, providerIndex)">添加专属模型</Button>
+            </div>
+
+            <div v-if="selectedModel(provider)" class="flex flex-wrap items-center justify-between gap-3 border-t border-[#343434] pt-3">
+              <div class="min-w-0">
+                <div class="text-xs text-[#a3a3a3]">Cursor 显示名称</div>
+                <div class="mt-1 truncate text-sm text-white">{{ buildProviderModelDisplayName(provider, selectedModel(provider)) }}</div>
+              </div>
+              <div class="flex items-center gap-3">
+                <div class="max-w-[260px] truncate text-xs" :class="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'error' ? 'text-[#f87171]' : 'text-[#8f8f8f]'">
+                  {{ modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.summaryText || "未测试" }}
                 </div>
-                <div class="max-w-[260px] truncate text-xs" :class="modelTests[modelKey(provider, model, providerIndex, modelIndex)]?.status === 'error' ? 'text-[#f87171]' : 'text-[#8f8f8f]'">
-                  {{ modelTests[modelKey(provider, model, providerIndex, modelIndex)]?.summaryText || "未测试" }}
-                </div>
-                <Button variant="text" :disabled="modelTests[modelKey(provider, model, providerIndex, modelIndex)]?.status === 'running'" @click="testModel(provider, model, providerIndex, modelIndex)">测试模型</Button>
+                <Button variant="text" :disabled="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'running'" @click="testModel(provider, selectedModel(provider), providerIndex, 0)">测试模型</Button>
               </div>
             </div>
+            <div v-else class="text-xs text-[#777]">每个中转站只会向 Cursor 提供一个模型。</div>
           </div>
         </div>
       </Card>

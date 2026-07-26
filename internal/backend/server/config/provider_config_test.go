@@ -98,6 +98,29 @@ func TestNormalizeProviderConfigsKeepsStableIDsAfterMutableFieldsChange(t *testi
 	}
 }
 
+func TestNormalizeProviderConfigsKeepsOnlySelectedModelAndBuildsDisplayName(t *testing.T) {
+	providers, err := NormalizeProviderConfigs([]ProviderConfig{{
+		ID: "provider-a", Name: "主中转站", Type: "openai", BaseURL: "https://a.example/v1", APIKey: "key-a",
+		Models: []ProviderModelConfig{
+			{ID: "model-first", ModelID: "first", Enabled: false, Available: true},
+			{ID: "model-selected", ModelID: "selected", Enabled: true, Available: true, DisplayName: "ignored"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("normalize providers: %v", err)
+	}
+	if len(providers[0].Models) != 1 {
+		t.Fatalf("expected one selected model, got %d", len(providers[0].Models))
+	}
+	model := providers[0].Models[0]
+	if model.ID != "model-selected" || !model.Enabled {
+		t.Fatalf("expected selected enabled model, got %#v", model)
+	}
+	if model.DisplayName != "主中转站-selected" {
+		t.Fatalf("unexpected Cursor display name: %q", model.DisplayName)
+	}
+}
+
 func containsString(items []string, expected string) bool {
 	for _, item := range items {
 		if item == expected {

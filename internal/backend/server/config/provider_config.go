@@ -54,9 +54,9 @@ func NormalizeProviderConfigs(input []ProviderConfig) ([]ProviderConfig, error) 
 		}
 		seenProviderIDs[provider.ID] = struct{}{}
 
-		seenModels := make(map[string]struct{}, len(source.Models))
-		seenModelIDs := make(map[string]struct{}, len(source.Models))
-		for modelIndex, modelSource := range source.Models {
+		seenModels := make(map[string]struct{}, 1)
+		seenModelIDs := make(map[string]struct{}, 1)
+		for modelIndex, modelSource := range selectProviderModels(source.Models) {
 			model, err := normalizeProviderModel(provider, modelSource)
 			if err != nil {
 				return nil, fmt.Errorf("中转站 %s 的模型 %d: %w", provider.Name, modelIndex+1, err)
@@ -77,12 +77,28 @@ func NormalizeProviderConfigs(input []ProviderConfig) ([]ProviderConfig, error) 
 	return providers, nil
 }
 
+func selectProviderModels(models []ProviderModelConfig) []ProviderModelConfig {
+	if len(models) == 0 {
+		return []ProviderModelConfig{}
+	}
+	for _, model := range models {
+		if model.Enabled {
+			return []ProviderModelConfig{model}
+		}
+	}
+	return []ProviderModelConfig{models[0]}
+}
+
 func normalizeProviderModel(provider ProviderConfig, source ProviderModelConfig) (ProviderModelConfig, error) {
 	model := source
 	model.ID = strings.TrimSpace(source.ID)
 	model.ModelID = strings.TrimSpace(source.ModelID)
-	model.DisplayName = strings.TrimSpace(source.DisplayName)
+	model.DisplayName = strings.TrimSpace(provider.Name) + "-" + model.ModelID
 	model.TooltipData = strings.TrimSpace(source.TooltipData)
+	if model.TooltipData == "" {
+		model.TooltipData = provider.Name
+	}
+	model.Enabled = true
 	model.ReasoningEffort = normalizeReasoningEffort(source.ReasoningEffort)
 	model.OpenAIEndpoint = modelchannel.NormalizeOpenAIEndpoint(provider.Type, source.OpenAIEndpoint)
 	model.OpenAIExtraParamsJSON = strings.TrimSpace(source.OpenAIExtraParamsJSON)
