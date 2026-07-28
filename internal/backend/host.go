@@ -17,6 +17,7 @@ import (
 	"cursor/internal/backend/server"
 	serverconfig "cursor/internal/backend/server/config"
 	"cursor/internal/backend/server/upstream"
+	"cursor/internal/historymetrics"
 	"cursor/internal/logger"
 	"cursor/internal/netproxy"
 	legacyruntime "cursor/internal/runtime"
@@ -272,6 +273,7 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 	legacyRunSSEProcedure := "/agent.v1.AgentService/RunSSE"
 	routeDeps := upstream.Dependencies{
 		SystemSettingService: &serverSystemSettings{configs: host.configs},
+		ProviderUsageService: serverProviderUsageService{},
 		HTTPClient:           netproxy.NewHTTPClient(30000 * time.Second),
 	}
 
@@ -772,4 +774,21 @@ func (settings *serverSystemSettings) ResolveModelAdapters(ctx context.Context) 
 		return nil, err
 	}
 	return snapshot.ModelAdapters, nil
+}
+
+type serverProviderUsageService struct{}
+
+func (serverProviderUsageService) ResolveProviderUsage(context.Context) (map[string]upstream.ProviderUsage, error) {
+	summary, err := historymetrics.LoadUsageSummary(appdata.UsageFilePath())
+	if err != nil {
+		return nil, err
+	}
+	usage := make(map[string]upstream.ProviderUsage, len(summary.ByProvider))
+	for providerID, item := range summary.ByProvider {
+		usage[providerID] = upstream.ProviderUsage{
+			ProviderCalls: item.ProviderCalls,
+			TotalTokens:   item.TotalTokens,
+		}
+	}
+	return usage, nil
 }

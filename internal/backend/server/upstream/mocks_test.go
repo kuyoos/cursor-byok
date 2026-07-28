@@ -12,7 +12,7 @@ func TestBuildAvailableModelEntriesUsesConfiguredModelsOnly(t *testing.T) {
 		{ID: "first", DisplayName: "First", ModelID: "model-first", Type: "openai", ReasoningEffort: "medium", TooltipData: "First model"},
 		{ID: "second", DisplayName: "Second", ModelID: "model-second", Type: "anthropic", AnthropicThinkingEffort: "xhigh", TooltipData: "Second model"},
 		{ID: "third", DisplayName: "Third", ModelID: "model-third", Type: "openai", ReasoningEffort: "high", TooltipData: "Third model"},
-	})
+	}, nil)
 
 	if availableModelsDisableUnusedHours != 0 {
 		t.Fatalf("unused models must expire immediately, got %d hours", availableModelsDisableUnusedHours)
@@ -38,6 +38,19 @@ func TestBuildAvailableModelEntriesUsesConfiguredModelsOnly(t *testing.T) {
 		if len(variants) != 1 {
 			t.Fatalf("entry %d: expected exactly one runtime variant, got %d", index, len(variants))
 		}
+	}
+}
+
+func TestBuildAvailableModelEntriesUsesProviderUsageTooltip(t *testing.T) {
+	entries := buildAvailableModelEntries([]legacyruntime.ModelAdapterConfig{{
+		ID: "first", ProviderID: "provider-a", DisplayName: "First", ModelID: "model-first", Type: "openai", ReasoningEffort: "medium", TooltipData: "旧备注",
+	}}, map[string]ProviderUsage{
+		"provider-a": {ProviderCalls: 12, TotalTokens: 3456789},
+	})
+
+	tooltip, _ := entries[0]["tooltipData"].(map[string]any)
+	if actual, _ := tooltip["markdownContent"].(string); actual != "累计调用：12 次\n累计 Token：3,456,789" {
+		t.Fatalf("unexpected provider usage tooltip: %q", actual)
 	}
 }
 

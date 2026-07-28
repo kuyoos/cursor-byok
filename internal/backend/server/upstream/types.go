@@ -20,12 +20,22 @@ type SystemSettingService interface {
 	ResolveModelAdapters(context.Context) ([]legacyruntime.ModelAdapterConfig, error)
 }
 
+type ProviderUsage struct {
+	ProviderCalls int64
+	TotalTokens   int64
+}
+
+type ProviderUsageService interface {
+	ResolveProviderUsage(context.Context) (map[string]ProviderUsage, error)
+}
+
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
 type Dependencies struct {
 	SystemSettingService SystemSettingService
+	ProviderUsageService ProviderUsageService
 	HTTPClient           HTTPClient
 	LogRoot              string
 	Routes               []Route

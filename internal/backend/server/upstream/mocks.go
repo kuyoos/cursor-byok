@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"html"
+	"strconv"
 	"strings"
 	"time"
 
@@ -436,6 +437,7 @@ func buildAvailableModelsPayload(reqCtx *RequestContext) (map[string]any, error)
 		return nil, err
 	}
 	modelRefs := collectModelAdapterRefs(adapters)
+	providerUsage := loadProviderUsage(reqCtx)
 	defaultModel := ""
 	if len(modelRefs) > 0 {
 		defaultModel = modelRefs[0]
@@ -459,7 +461,7 @@ func buildAvailableModelsPayload(reqCtx *RequestContext) (map[string]any, error)
 			"defaultModel": defaultModel,
 		},
 		"disableUnusedModelsAfterNHours": availableModelsDisableUnusedHours,
-		"models":                         buildAvailableModelEntries(adapters),
+		"models":                         buildAvailableModelEntries(adapters, providerUsage),
 		"planExecutionModelConfig": map[string]any{
 			"defaultModel":   defaultModel,
 			"fallbackModels": append([]string(nil), modelRefs...),
@@ -631,7 +633,22 @@ func loadConfiguredModelAdapters(reqCtx *RequestContext) ([]legacyruntime.ModelA
 	return reqCtx.Deps.SystemSettingService.ResolveModelAdapters(ctx)
 }
 
-func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig) []map[string]any {
+func loadProviderUsage(reqCtx *RequestContext) map[string]ProviderUsage {
+	if reqCtx == nil || reqCtx.Deps == nil || reqCtx.Deps.ProviderUsageService == nil {
+		return map[string]ProviderUsage{}
+	}
+	ctx := context.Background()
+	if reqCtx.Request != nil {
+		ctx = reqCtx.Request.Context()
+	}
+	usage, err := reqCtx.Deps.ProviderUsageService.ResolveProviderUsage(ctx)
+	if err != nil {
+		return map[string]ProviderUsage{}
+	}
+	return usage
+}
+
+func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig, usageByProvider map[string]ProviderUsage) []map[string]any {
 	if len(adapters) == 0 {
 		return []map[string]any{}
 	}
@@ -640,7 +657,7 @@ func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig) []m
 		channelID := strings.TrimSpace(adapter.ID)
 		displayName := strings.TrimSpace(adapter.DisplayName)
 		modelID := strings.TrimSpace(adapter.ModelID)
-		tooltipData := strings.TrimSpace(adapter.TooltipData)
+		tooltipData := buildProviderUsageTooltip(adapter, usageByProvider)
 		if channelID == "" || modelID == "" {
 			continue
 		}
@@ -677,6 +694,34 @@ func buildAvailableModelEntries(adapters []legacyruntime.ModelAdapterConfig) []m
 		})
 	}
 	return output
+}
+
+func buildProviderUsageTooltip(adapter legacyruntime.ModelAdapterConfig, usageByProvider map[string]ProviderUsage) string {
+	providerID := strings.TrimSpace(adapter.ProviderID)
+	usage, tracked := usageByProvider[providerID]
+	if !tracked || providerID == "" {
+		return strings.TrimSpace(adapter.TooltipData)
+	}
+	return "累计调用：" + formatUsageNumber(int64(usage.ProviderCalls)) + " 次\n累计 Token：" + formatUsageNumber(usage.TotalTokens)
+}
+
+func formatUsageNumber(value int64) string {
+	if value < 0 {
+		value = 0
+	}
+	text := strconv.FormatInt(value, 10)
+	if len(text) <= 3 {
+		return text
+	}
+	first := len(text) % 3
+	if first == 0 {
+		first = 3
+	}
+	parts := []string{text[:first]}
+	for index := first; index < len(text); index += 3 {
+		parts = append(parts, text[index:index+3])
+	}
+	return strings.Join(parts, ",")
 }
 
 func buildThinkingEffortParameterDefinitions(adapterType string) []map[string]any {

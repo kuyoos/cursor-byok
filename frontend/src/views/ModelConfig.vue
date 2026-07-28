@@ -56,11 +56,24 @@ function providerUsage(provider) {
   };
 }
 
+function providerUsageSummary(provider) {
+  const usage = providerUsage(provider);
+  return `累计调用 ${formatCompactInteger(usage.providerCalls)} 次 · 累计 ${formatCompactInteger(usage.totalTokens)} Tokens`;
+}
+
 function providerSummary(provider) {
   const model = selectedModel(provider);
-  const usage = providerUsage(provider);
   const selection = model ? `已选择 ${model.modelID}` : "未选择模型";
-  return `${selection} · ${formatCompactInteger(usage.totalTokens)} Tokens · ${formatCompactInteger(usage.providerCalls)} 次调用`;
+  return `${selection} · ${providerUsageSummary(provider)}`;
+}
+
+function contextWindowInput(model) {
+  return model?.contextWindowTokens || "";
+}
+
+function setContextWindow(model, value) {
+  const text = String(value || "").trim();
+  model.contextWindowTokens = /^\d+$/.test(text) && Number(text) > 0 ? Number(text) : 0;
 }
 
 function addProvider() {
@@ -295,16 +308,37 @@ onMounted(async () => {
               <Button variant="default" @click="addCustomModel(provider, providerIndex)">添加专属模型</Button>
             </div>
 
-            <div v-if="selectedModel(provider)" class="flex flex-wrap items-center justify-between gap-3 border-t border-[#343434] pt-3">
-              <div class="min-w-0">
-                <div class="text-xs text-[#a3a3a3]">Cursor 显示名称</div>
-                <div class="mt-1 truncate text-sm text-white">{{ buildProviderModelDisplayName(provider, selectedModel(provider)) }}</div>
-              </div>
-              <div class="flex items-center gap-3">
-                <div class="max-w-[260px] truncate text-xs" :class="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'error' ? 'text-[#f87171]' : 'text-[#8f8f8f]'">
-                  {{ modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.summaryText || "未测试" }}
+            <div v-if="selectedModel(provider)" class="space-y-3 border-t border-[#343434] pt-3">
+              <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label class="space-y-1 text-xs text-[#a3a3a3]">
+                  <span>上下文窗口 Token</span>
+                  <input
+                    :value="contextWindowInput(selectedModel(provider))"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="例如：200000（留空使用默认值）"
+                    class="h-9 w-full rounded-[6px] border border-[#3f3f3f] bg-[#1f1f1f] px-3 text-sm text-white outline-none focus:border-[#10AD5D]"
+                    @input="setContextWindow(selectedModel(provider), $event.target.value)"
+                  />
+                </label>
+                <div class="space-y-1 text-xs text-[#a3a3a3]">
+                  <div>Cursor 悬停备注</div>
+                  <div class="flex h-9 items-center rounded-[6px] border border-[#343434] bg-[#1f1f1f] px-3 text-sm text-[#d4d4d4]">
+                    {{ providerUsageSummary(provider) }}
+                  </div>
                 </div>
-                <Button variant="text" :disabled="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'running'" @click="testModel(provider, selectedModel(provider), providerIndex, 0)">测试模型</Button>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-xs text-[#a3a3a3]">Cursor 显示名称</div>
+                  <div class="mt-1 truncate text-sm text-white">{{ buildProviderModelDisplayName(provider, selectedModel(provider)) }}</div>
+                </div>
+                <div class="flex items-center gap-3">
+                  <div class="max-w-[260px] truncate text-xs" :class="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'error' ? 'text-[#f87171]' : 'text-[#8f8f8f]'">
+                    {{ modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.summaryText || "未测试" }}
+                  </div>
+                  <Button variant="text" :disabled="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'running'" @click="testModel(provider, selectedModel(provider), providerIndex, 0)">测试模型</Button>
+                </div>
               </div>
             </div>
             <div v-else class="text-xs text-[#777]">每个中转站只会向 Cursor 提供一个模型。</div>
