@@ -21,6 +21,8 @@ type ConversationFile struct {
 	RootConversationID              string                                `json:"root_conversation_id"`
 	ParentConversationID            string                                `json:"parent_conversation_id"`
 	ParentToolCallID                string                                `json:"parent_tool_call_id"`
+	ForkedFromConversationID        string                                `json:"forked_from_conversation_id,omitempty"`
+	ForkRequestID                   string                                `json:"fork_request_id,omitempty"`
 	SubagentTypeName                string                                `json:"subagent_type_name,omitempty"`
 	Mode                            string                                `json:"mode"`
 	ContextVersion                  int64                                 `json:"context_version,omitempty"`

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"cursor/gen/agentv1"
+	"github.com/google/uuid"
 )
 
 const (
@@ -71,7 +72,7 @@ func (store *ConversationFileStore) CreateConversation(conversationID string, mo
 		return nil, fmt.Errorf("conversation file store is nil")
 	}
 	return store.mutateConversation(conversationID, true, func(conversation *ConversationFile) error {
-		if strings.TrimSpace(conversation.ConversationID) != "" {
+		if !conversation.CreatedAt.IsZero() {
 			if strings.TrimSpace(conversation.Mode) == "" {
 				alias, err := modeAlias(mode)
 				if err != nil {
@@ -209,7 +210,77 @@ func (store *ConversationFileStore) SaveConversationWithEntries(conversationID s
 	return cloneConversationFile(conversation), nil
 }
 
-// UpdateConversationMeta 更新 state.json；context.json 保持不变。
+// CreateForkConversation 在目标会话目录上加锁后创建 fork，保证重试不会重复追加历史。
+// source 只作为快照读取；fork 的 state/context 由同一临界区原子写入。
+func (store *ConversationFileStore) CreateForkConversation(targetConversationID string, source *ConversationFile, entries []HistoryEntry, requestID string) (*ConversationFile, error) {
+	if store == nil {
+		return nil, fmt.Errorf("conversation file store is nil")
+	}
+	if source == nil {
+		return nil, fmt.Errorf("fork source conversation is nil")
+	}
+	targetID, err := validateConversationID(targetConversationID)
+	if err != nil {
+		return nil, err
+	}
+	sourceID, err := validateConversationID(source.ConversationID)
+	if err != nil {
+		return nil, fmt.Errorf("fork source conversation: %w", err)
+	}
+	if targetID == sourceID {
+		return nil, fmt.Errorf("fork target must differ from source conversation")
+	}
+
+	return store.mutateConversation(targetID, true, func(target *ConversationFile) error {
+		if strings.TrimSpace(target.ForkedFromConversationID) != "" {
+			if strings.TrimSpace(target.ForkedFromConversationID) != sourceID || strings.TrimSpace(target.ForkRequestID) != strings.TrimSpace(requestID) {
+				return fmt.Errorf("fork target conversation already belongs to another fork: %s", targetID)
+			}
+			// 同一 source/request 的重试必须从同一分叉前缀重新开始，
+			// 丢弃上一次失败尝试留下的 provider 输出，避免重复历史。
+			target.Entries = nil
+			target.NextTurnSeq = 1
+			target.NextEntrySeq = 1
+			appendEntriesInPlace(target, resetEntrySequences(entries))
+			return nil
+		}
+		if len(target.Entries) > 0 {
+			return fmt.Errorf("fork target conversation already contains history: %s", targetID)
+		}
+
+		mergeConversationMetadata(target, source)
+		target.SchemaVersion = conversationSchemaVersion
+		target.ConversationID = targetID
+		target.RootConversationID = firstNonEmpty(strings.TrimSpace(source.RootConversationID), sourceID, targetID)
+		target.ParentConversationID = sourceID
+		target.ParentToolCallID = ""
+		target.ForkedFromConversationID = sourceID
+		target.ForkRequestID = strings.TrimSpace(requestID)
+		target.CurrentLoopID = ""
+		target.CurrentLoopStatus = "idle"
+		target.CurrentRequestID = ""
+		target.CurrentTurnSeq = 0
+		target.LatestRequestPrefix = nil
+		target.LastProviderCall = nil
+		target.AutoCompactionPending = false
+		target.AutoCompactionPromptTokens = 0
+		target.AutoCompactionReserveTokens = 0
+		target.AutoCompactionTriggeredAt = ""
+		target.AutoCompactionSourceModelCallID = ""
+		target.Entries = nil
+		target.NextTurnSeq = 1
+		target.NextEntrySeq = 1
+		appendEntriesInPlace(target, resetEntrySequences(entries))
+		return nil
+	})
+}
+
+// ForkConversationID 为同一个 source/request 生成稳定 UUID，供客户端重试时复用目标目录。
+func ForkConversationID(sourceConversationID string, requestID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("cursor-byok:fork:"+strings.TrimSpace(sourceConversationID)+":"+strings.TrimSpace(requestID))).String()
+}
+
+// UpdateConversationMeta 原子更新 state.json 中的会话运行元数据，不触碰 context.json 历史。
 func (store *ConversationFileStore) UpdateConversationMeta(conversationID string, update func(*ConversationFile) error) (*ConversationFile, error) {
 	if store == nil {
 		return nil, fmt.Errorf("conversation file store is nil")
@@ -378,7 +449,6 @@ func (store *ConversationFileStore) mutateConversation(conversationID string, cr
 			NextTurnSeq:        1,
 			NextEntrySeq:       1,
 			Entries:            make([]HistoryEntry, 0, 16),
-			CreatedAt:          time.Now().UTC(),
 		}
 	}
 	if update == nil {
@@ -662,6 +732,8 @@ func mergeConversationMetadata(target *ConversationFile, source *ConversationFil
 	}
 	target.ParentConversationID = strings.TrimSpace(source.ParentConversationID)
 	target.ParentToolCallID = strings.TrimSpace(source.ParentToolCallID)
+	target.ForkedFromConversationID = strings.TrimSpace(source.ForkedFromConversationID)
+	target.ForkRequestID = strings.TrimSpace(source.ForkRequestID)
 	target.SubagentTypeName = strings.TrimSpace(source.SubagentTypeName)
 	if strings.TrimSpace(source.Mode) != "" {
 		target.Mode = strings.TrimSpace(source.Mode)

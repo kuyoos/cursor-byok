@@ -7,15 +7,17 @@ import (
 
 // HomeMetricsSummary 定义首页和中转站页面使用的历史统计摘要。
 type HomeMetricsSummary struct {
-	ProviderCallsTotal int                                  `json:"providerCallsTotal"`
-	TurnsTotal         int                                  `json:"turnsTotal"`
-	ValidTurnsTotal    int                                  `json:"validTurnsTotal"`
-	InvalidTurnsTotal  int                                  `json:"invalidTurnsTotal"`
-	RequestTokensTotal int64                                `json:"requestTokensTotal"`
-	PromptTokensTotal  int64                                `json:"promptTokensTotal"`
-	CacheReadTokens    int64                                `json:"cacheReadTokens"`
-	CacheWriteTokens   int64                                `json:"cacheWriteTokens"`
-	CacheHitRate       *float64                             `json:"cacheHitRate"`
+	ProviderCallsTotal int                                   `json:"providerCallsTotal"`
+	TurnsTotal         int                                   `json:"turnsTotal"`
+	ValidTurnsTotal    int                                   `json:"validTurnsTotal"`
+	InvalidTurnsTotal  int                                   `json:"invalidTurnsTotal"`
+	RequestTokensTotal int64                                 `json:"requestTokensTotal"`
+	PromptTokensTotal  int64                                 `json:"promptTokensTotal"`
+	CacheReadTokens    int64                                 `json:"cacheReadTokens"`
+	CacheWriteTokens   int64                                 `json:"cacheWriteTokens"`
+	CacheHitRate       *float64                              `json:"cacheHitRate"`
+	Daily              []historymetrics.Daily                `json:"daily"`
+	RecentEvents       []historymetrics.UsageEvent           `json:"recentEvents"`
 	ByProvider         map[string]historymetrics.Attribution `json:"byProvider"`
 	ByProviderModel    map[string]historymetrics.Attribution `json:"byProviderModel"`
 }
@@ -48,6 +50,8 @@ func (service *MetricsService) GetHomeMetricsSummary() (HomeMetricsSummary, erro
 		CacheReadTokens:    summary.CacheReadTokens,
 		CacheWriteTokens:   summary.CacheWriteTokens,
 		CacheHitRate:       summary.CacheHitRate,
+		Daily:              summary.Daily,
+		RecentEvents:       summary.RecentEvents,
 		ByProvider:         summary.ByProvider,
 		ByProviderModel:    summary.ByProviderModel,
 	}, nil

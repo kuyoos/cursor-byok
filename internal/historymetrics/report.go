@@ -12,6 +12,35 @@ type Attribution struct {
 	TotalTokens      int64  `json:"totalTokens"`
 }
 
+type Daily struct {
+	Date              string `json:"date"`
+	ProviderCalls     int64  `json:"providerCalls"`
+	TurnsTotal        int64  `json:"turnsTotal"`
+	ValidTurnsTotal   int64  `json:"validTurnsTotal"`
+	InvalidTurnsTotal int64  `json:"invalidTurnsTotal"`
+	InputTokens       int64  `json:"inputTokens"`
+	OutputTokens      int64  `json:"outputTokens"`
+	CacheReadTokens   int64  `json:"cacheReadTokens"`
+	CacheWriteTokens  int64  `json:"cacheWriteTokens"`
+	TotalTokens       int64  `json:"totalTokens"`
+}
+
+type UsageEvent struct {
+	EventID          string `json:"eventID"`
+	Kind             string `json:"kind,omitempty"`
+	Status           string `json:"status,omitempty"`
+	ProviderID       string `json:"providerID,omitempty"`
+	ModelConfigID    string `json:"modelConfigID,omitempty"`
+	Model            string `json:"model,omitempty"`
+	At               string `json:"at"`
+	InputTokens      int64  `json:"inputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
+	CacheReadTokens  int64  `json:"cacheReadTokens"`
+	CacheWriteTokens int64  `json:"cacheWriteTokens"`
+	TotalTokens      int64  `json:"totalTokens"`
+	UsagePresent     bool   `json:"usagePresent"`
+}
+
 type Summary struct {
 	ProviderCallsTotal int                    `json:"providerCallsTotal"`
 	TurnsTotal         int                    `json:"turnsTotal"`
@@ -22,6 +51,8 @@ type Summary struct {
 	CacheReadTokens    int64                  `json:"cacheReadTokens"`
 	CacheWriteTokens   int64                  `json:"cacheWriteTokens"`
 	CacheHitRate       *float64               `json:"cacheHitRate"`
+	Daily              []Daily                `json:"daily"`
+	RecentEvents       []UsageEvent           `json:"recentEvents"`
 	ByProvider         map[string]Attribution `json:"byProvider"`
 	ByProviderModel    map[string]Attribution `json:"byProviderModel"`
 }

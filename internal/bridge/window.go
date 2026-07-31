@@ -27,6 +27,7 @@ type WindowService struct {
 	updater           *updater.Manager
 	modelConfigWindow *application.WebviewWindow
 	modelEditorWindow *application.WebviewWindow
+	usageStatsWindow  *application.WebviewWindow
 	editorCtx         *modelEditorContext
 	mu                sync.RWMutex
 }
@@ -233,6 +234,65 @@ func (s *WindowService) GetModelEditorContext() map[string]any {
 		"index":       s.editorCtx.Index,
 		"adapterJSON": s.editorCtx.AdapterJSON,
 	}
+}
+
+// OpenUsageStatsWindow 打开使用统计窗口。如果窗口已存在则聚焦。
+func (s *WindowService) OpenUsageStatsWindow() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.app == nil {
+		return
+	}
+	if s.usageStatsWindow != nil {
+		s.usageStatsWindow.Show()
+		s.usageStatsWindow.Focus()
+		return
+	}
+
+	win := s.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:               "使用统计",
+		Width:               1120,
+		Height:              820,
+		MinWidth:            900,
+		MinHeight:           620,
+		DisableResize:       false,
+		Frameless:           goruntime.GOOS == "windows",
+		URL:                 "/#/usage-stats",
+		Hidden:              false,
+		HideOnEscape:        false,
+		MinimiseButtonState: application.ButtonEnabled,
+		MaximiseButtonState: application.ButtonEnabled,
+		CloseButtonState:    application.ButtonEnabled,
+		BackgroundColour:    application.RGBA{Red: 25, Green: 25, Blue: 25, Alpha: 255},
+		Mac: application.MacWindow{
+			Backdrop:      application.MacBackdropLiquidGlass,
+			DisableShadow: false,
+			TitleBar: application.MacTitleBar{
+				AppearsTransparent:   true,
+				Hide:                 false,
+				HideTitle:            true,
+				FullSizeContent:      true,
+				UseToolbar:           false,
+				HideToolbarSeparator: true,
+			},
+			WebviewPreferences: application.MacWebviewPreferences{
+				FullscreenEnabled:                   u.True,
+				TextInteractionEnabled:              u.True,
+				AllowsBackForwardNavigationGestures: u.False,
+			},
+		},
+		Windows: application.WindowsWindow{
+			HiddenOnTaskbar: false,
+		},
+	})
+
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.usageStatsWindow = nil
+	})
+	s.usageStatsWindow = win
 }
 
 // OpenHistoryWindow 用于处理与 OpenHistoryWindow 相关的逻辑。

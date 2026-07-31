@@ -129,6 +129,8 @@ func (service *Service) syncConversationRecord(conversationID string, conversati
 		item.RootConversationID = conversation.RootConversationID
 		item.ParentConversationID = conversation.ParentConversationID
 		item.ParentToolCallID = conversation.ParentToolCallID
+		item.ForkedFromConversationID = conversation.ForkedFromConversationID
+		item.ForkRequestID = conversation.ForkRequestID
 		item.SubagentTypeName = conversation.SubagentTypeName
 		item.Mode = conversation.Mode
 		item.TokenDetailsUsedTokens = conversation.TokenDetailsUsedTokens

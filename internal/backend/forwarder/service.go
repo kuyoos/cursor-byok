@@ -679,24 +679,37 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 
 // handleRunIntent 处理 run/prewarm 类 intent，负责建会话、写 turn 和拉起 provider。
 func (service *Service) handleRunIntent(intent InboundIntent) error {
+	if service.hasInitializedRun(intent) {
+		return nil
+	}
 	intent.UserMessage = normalizeUserMessageForStorage(intent.UserMessage)
-	if !intent.Prewarm {
+	conversation, effectiveMode, turnSeq, initialEntries, err := service.bootstrapRuntimeConversation(intent)
+	if err != nil {
+		return err
+	}
+	rewindDecision := service.decideRunRewind(intent, conversation)
+	targetConversationID := strings.TrimSpace(intent.ConversationID)
+	if rewindDecision.Apply && rewindDecision.IsFork {
+		targetConversationID = ForkConversationID(intent.ConversationID, intent.RequestID)
+		rewindDecision.ForkParentConversationID = strings.TrimSpace(intent.ConversationID)
+		rewindDecision.ForkRootConversationID = firstNonEmpty(strings.TrimSpace(conversation.RootConversationID), strings.TrimSpace(intent.ConversationID), targetConversationID)
+		rewindDecision.ForkTargetConversationID = targetConversationID
+	}
+	if !intent.Prewarm && !rewindDecision.IsFork {
 		service.cancelOtherConversationActors(
 			intent.ConversationID,
 			intent.RequestID,
 			"[canceled] Superseded by newer request",
 		)
 	}
-	conversation, effectiveMode, turnSeq, initialEntries, err := service.bootstrapRuntimeConversation(intent)
-	if err != nil {
-		return err
-	}
-	rewindDecision := service.decideRunRewind(intent, conversation)
 	if rewindDecision.Evaluated && !rewindDecision.Apply {
 		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_skipped", rewindDecision)
 	}
+	if rewindDecision.IsFork && !rewindDecision.Apply {
+		return fmt.Errorf("fork prefix cannot be safely matched for conversation %s: %s", strings.TrimSpace(intent.ConversationID), firstNonEmpty(strings.TrimSpace(rewindDecision.SkipReason), "unknown"))
+	}
 	if rewindDecision.Apply {
-		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_detected", rewindDecision)
+		service.logRunRewindDecision(intent.RequestID, targetConversationID, "rewind_detected", rewindDecision)
 		turnSeq = rewindDecision.TargetTurnSeq
 		initialEntries, err = buildRunEntries(intent, effectiveMode, turnSeq)
 		if err != nil {
@@ -705,7 +718,34 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		finalizeRunRewindProjection(&rewindDecision, initialEntries)
 	}
 	if service.store != nil {
-		if rewindDecision.Apply {
+		switch {
+		case rewindDecision.Apply && rewindDecision.IsFork:
+			persisted, err := service.store.CreateForkConversation(
+				targetConversationID,
+				conversation,
+				rewindDecision.ProjectedEntries,
+				intent.RequestID,
+			)
+			if err != nil {
+				return err
+			}
+			persisted, err = service.store.UpdateConversationMeta(targetConversationID, func(item *ConversationFile) error {
+				applyRunRewindMetadata(item, conversation, intent, turnSeq)
+				item.ConversationID = targetConversationID
+				item.ParentConversationID = strings.TrimSpace(intent.ConversationID)
+				item.RootConversationID = firstNonEmpty(strings.TrimSpace(conversation.RootConversationID), strings.TrimSpace(intent.ConversationID), targetConversationID)
+				item.ForkedFromConversationID = strings.TrimSpace(intent.ConversationID)
+				item.ForkRequestID = strings.TrimSpace(intent.RequestID)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			if persisted != nil {
+				conversation = persisted
+			}
+			service.logRunRewindDecision(intent.RequestID, targetConversationID, "rewind_applied", rewindDecision)
+		case rewindDecision.Apply:
 			persisted, err := service.store.ReplaceEntries(
 				intent.ConversationID,
 				rewindDecision.ProjectedEntries,
@@ -721,7 +761,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 				conversation = persisted
 			}
 			service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_applied", rewindDecision)
-		} else {
+		default:
 			persisted, err := service.store.SaveConversationWithEntries(intent.ConversationID, conversation, initialEntries)
 			if err != nil {
 				return err
@@ -730,6 +770,25 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 				conversation = persisted
 			}
 		}
+	} else if rewindDecision.Apply && rewindDecision.IsFork {
+		forked := cloneConversationFile(conversation)
+		forked.ConversationID = targetConversationID
+		forked.ParentConversationID = strings.TrimSpace(intent.ConversationID)
+		forked.RootConversationID = firstNonEmpty(strings.TrimSpace(conversation.RootConversationID), strings.TrimSpace(intent.ConversationID), targetConversationID)
+		forked.ForkedFromConversationID = strings.TrimSpace(intent.ConversationID)
+		forked.ForkRequestID = strings.TrimSpace(intent.RequestID)
+		forked.Entries = cloneHistoryEntries(rewindDecision.ProjectedEntries)
+		forked.NextEntrySeq = 1
+		forked.NextTurnSeq = 1
+		applyRunRewindMetadata(forked, conversation, intent, turnSeq)
+		forked.ConversationID = targetConversationID
+		forked.ParentConversationID = strings.TrimSpace(intent.ConversationID)
+		forked.RootConversationID = firstNonEmpty(strings.TrimSpace(conversation.RootConversationID), strings.TrimSpace(intent.ConversationID), targetConversationID)
+		forked.ForkedFromConversationID = strings.TrimSpace(intent.ConversationID)
+		forked.ForkRequestID = strings.TrimSpace(intent.RequestID)
+		deriveConversationLoopState(forked)
+		conversation = forked
+		service.logRunRewindDecision(intent.RequestID, targetConversationID, "rewind_applied", rewindDecision)
 	} else if rewindDecision.Apply {
 		service.applyRunRewindToConversation(conversation, rewindDecision, intent, turnSeq)
 		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_applied", rewindDecision)
@@ -738,7 +797,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		deriveConversationLoopState(conversation)
 	}
 
-	stream, err := service.broker.OpenStream(intent.RequestID, intent.ConversationID, turnSeq, intent.ModelID, intent.ModelName, effectiveMode, userMessageText(intent.UserMessage))
+	stream, err := service.broker.OpenStream(intent.RequestID, targetConversationID, turnSeq, intent.ModelID, intent.ModelName, effectiveMode, userMessageText(intent.UserMessage))
 	if err != nil {
 		return err
 	}
@@ -780,7 +839,12 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
 	service.setTurnPhase(stream, TurnPhaseIdle)
-	service.debug.LogRuntime(context.Background(), intent.RequestID, intent.ConversationID, "stream_state_updated", map[string]any{
+	service.debug.LogRuntime(context.Background(), intent.RequestID, targetConversationID, "stream_state_updated", map[string]any{
+		"parent_conversation_id":        strings.TrimSpace(conversation.ParentConversationID),
+		"root_conversation_id":          strings.TrimSpace(conversation.RootConversationID),
+		"target_conversation_id":        targetConversationID,
+		"fork_target_conversation_id":   targetConversationID,
+		"is_fork":                       rewindDecision.IsFork,
 		"turn_seq":                      turnSeq,
 		"model_id":                      strings.TrimSpace(intent.ModelID),
 		"model_name":                    strings.TrimSpace(intent.ModelName),
@@ -792,13 +856,44 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		"subagent_model_overrides":      subagentModelOverrideSummaries(intent.SubagentModelOverrides),
 		"latest_user_text":              userMessageText(intent.UserMessage),
 	})
-	if err := service.publishCheckpoint(intent.RequestID, intent.ConversationID); err != nil {
+	if err := service.publishCheckpoint(intent.RequestID, targetConversationID); err != nil {
 		return err
 	}
 	if intent.Prewarm {
 		return nil
 	}
 	return service.requestProviderAction(stream, providerActionStart)
+}
+
+func (service *Service) hasInitializedRun(intent InboundIntent) bool {
+	if service == nil || service.broker == nil || strings.TrimSpace(intent.RequestID) == "" {
+		return false
+	}
+	stream, ok := service.broker.Get(intent.RequestID)
+	if !ok || stream == nil {
+		return false
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	conversation := stream.CheckpointConversation
+	if conversation == nil || strings.TrimSpace(conversation.CurrentRequestID) != strings.TrimSpace(intent.RequestID) {
+		return false
+	}
+	if conversation.CurrentTurnSeq <= 0 || len(conversation.Entries) == 0 {
+		return false
+	}
+	if strings.TrimSpace(intent.ConversationID) != strings.TrimSpace(conversation.ConversationID) {
+		if len(intent.PrependUserMessages) == 0 || strings.TrimSpace(conversation.ForkRequestID) != strings.TrimSpace(intent.RequestID) {
+			return false
+		}
+		if strings.TrimSpace(conversation.ConversationID) != ForkConversationID(intent.ConversationID, intent.RequestID) {
+			return false
+		}
+	}
+	if intent.Prewarm || isTerminalStreamStatus(stream.Status) {
+		return true
+	}
+	return stream.ProviderActive || stream.ProviderPassCount > 0 || stream.PendingProviderAction != providerActionNone
 }
 
 func (service *Service) loadPreviousSummaryReplay(conversationID string) ([][]byte, bool, error) {
@@ -2147,7 +2242,7 @@ func (service *Service) failStreamIfNonTerminal(stream *ActiveStream, terminalCo
 }
 
 // publishCheckpoint 按当前内存会话镜像投影出 checkpoint，并广播给所有 RunSSE 订阅者。
-func (service *Service) publishCheckpoint(requestID string, _ string) error {
+func (service *Service) publishCheckpoint(requestID string, conversationID string) error {
 	stream, ok := service.broker.Get(requestID)
 	if !ok || stream == nil {
 		return fmt.Errorf("request is not active: %s", requestID)
@@ -2155,6 +2250,11 @@ func (service *Service) publishCheckpoint(requestID string, _ string) error {
 	conversation, pendingExecs, pendingInteractions, err := service.snapshotCheckpointConversation(stream)
 	if err != nil {
 		return err
+	}
+	requestedConversationID := strings.TrimSpace(conversationID)
+	actualConversationID := strings.TrimSpace(conversation.ConversationID)
+	if requestedConversationID != "" && actualConversationID != "" && requestedConversationID != actualConversationID {
+		return fmt.Errorf("checkpoint conversation mismatch: requested=%s actual=%s", requestedConversationID, actualConversationID)
 	}
 	state, err := service.projector.ProjectLegacyCheckpoint(conversation)
 	if err != nil {

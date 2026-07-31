@@ -10,6 +10,7 @@ import {
   appViewState,
   openConfigWindow,
   openModelConfigWindow,
+  openUsageStatsWindow,
   saveRoutingMode,
   syncHomeMetrics,
   syncServiceState,
@@ -60,6 +61,14 @@ async function handleOpenConfig() {
 async function handleOpenModelConfig() {
   try {
     await openModelConfigWindow();
+  } catch (error) {
+    await showActionError("打开失败", toUserError(error));
+  }
+}
+
+async function handleOpenUsageStats() {
+  try {
+    await openUsageStatsWindow();
   } catch (error) {
     await showActionError("打开失败", toUserError(error));
   }
@@ -131,6 +140,7 @@ onMounted(() => {
         </div>
         <div class="center-row gap-2">
           <Button variant="default" @click="handleOpenConfig">设置文件夹</Button>
+          <Button variant="default" @click="handleOpenUsageStats">使用统计</Button>
           <Button variant="primary" @click="handleOpenModelConfig">模型配置</Button>
         </div>
       </div>

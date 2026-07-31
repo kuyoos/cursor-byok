@@ -29,7 +29,7 @@ func NewStreamBroker() *StreamBroker {
 	}
 }
 
-// OpenStream 打开或复用指定 request 的活动流，并刷新其最新上下文。
+// OpenStream 打开活动流；同一 request 的终态流只作为重试占位，不能复用已退出的 actor。
 func (broker *StreamBroker) OpenStream(requestID string, conversationID string, turnSeq int64, modelID string, modelName string, mode agentv1.AgentMode, latestUserText string) (*ActiveStream, error) {
 	normalizedRequestID := strings.TrimSpace(requestID)
 	if normalizedRequestID == "" {
@@ -39,55 +39,58 @@ func (broker *StreamBroker) OpenStream(requestID string, conversationID string, 
 	if err != nil {
 		return nil, err
 	}
-	broker.mu.Lock()
-	defer broker.mu.Unlock()
-	if existing, ok := broker.streams[normalizedRequestID]; ok {
+
+	for {
+		broker.mu.Lock()
+		existing, ok := broker.streams[normalizedRequestID]
+		if !ok || existing == nil {
+			stream := newActiveStream(normalizedRequestID, conversationID, turnSeq, modelID, modelName, normalizedMode, latestUserText)
+			broker.streams[normalizedRequestID] = stream
+			broker.mu.Unlock()
+			return stream, nil
+		}
+
 		existing.mu.Lock()
-		existing.ConversationID = strings.TrimSpace(conversationID)
-		existing.TurnSeq = turnSeq
-		existing.ModelID = strings.TrimSpace(modelID)
-		existing.ModelName = strings.TrimSpace(modelName)
-		existing.Mode = normalizedMode
-		existing.LatestUserText = strings.TrimSpace(latestUserText)
-		if existing.Status == "" {
-			existing.Status = StreamStatusCreated
+		terminal := isTerminalStreamStatus(existing.Status) || existing.Phase == TurnPhaseCanceled || existing.Phase == TurnPhaseCompleted || existing.Phase == TurnPhaseFailed
+		if !terminal {
+			updateActiveStreamContextLocked(existing, conversationID, turnSeq, modelID, modelName, normalizedMode, latestUserText)
+			existing.mu.Unlock()
+			broker.mu.Unlock()
+			return existing, nil
 		}
-		if existing.PendingExecs == nil {
-			existing.PendingExecs = make(map[string]runtimecore.PendingExec)
-		}
-		if existing.PendingInteractions == nil {
-			existing.PendingInteractions = make(map[string]runtimecore.PendingInteraction)
-		}
-		if existing.PartialToolCallIDs == nil {
-			existing.PartialToolCallIDs = make(map[string]struct{})
-		}
-		if existing.PatchEditQueues == nil {
-			existing.PatchEditQueues = make(map[string][]queuedPatchEditOperation)
-		}
-		if existing.BackgroundShells == nil {
-			existing.BackgroundShells = make(map[string]*BackgroundShellState)
-		}
-		if existing.BackgroundShellsByMessageID == nil {
-			existing.BackgroundShellsByMessageID = make(map[uint32]string)
-		}
-		if existing.BackgroundShellsByExecID == nil {
-			existing.BackgroundShellsByExecID = make(map[string]string)
-		}
-		if existing.BackgroundShellActions == nil {
-			existing.BackgroundShellActions = make(map[string]time.Time)
-		}
-		existing.UpdatedAt = time.Now().UTC()
+		actorDone := existing.ActorDone
 		existing.mu.Unlock()
+		broker.mu.Unlock()
+
+		// 终态命令通常已在这里之前退出 actor；等待它收口，避免重置后旧 actor
+		// 继续使用同一 request_id 写入新流。
+		if actorDone != nil {
+			<-actorDone
+		}
+
+		broker.mu.Lock()
+		current, stillPresent := broker.streams[normalizedRequestID]
+		if !stillPresent || current != existing {
+			broker.mu.Unlock()
+			continue
+		}
+		existing.mu.Lock()
+		resetActiveStreamForRetryLocked(existing, conversationID, turnSeq, modelID, modelName, normalizedMode, latestUserText)
+		existing.mu.Unlock()
+		broker.mu.Unlock()
 		return existing, nil
 	}
+}
+
+func newActiveStream(requestID string, conversationID string, turnSeq int64, modelID string, modelName string, mode agentv1.AgentMode, latestUserText string) *ActiveStream {
 	now := time.Now().UTC()
-	stream := &ActiveStream{
-		RequestID:                   normalizedRequestID,
+	return &ActiveStream{
+		RequestID:                   requestID,
 		ConversationID:              strings.TrimSpace(conversationID),
 		TurnSeq:                     turnSeq,
 		ModelID:                     strings.TrimSpace(modelID),
 		ModelName:                   strings.TrimSpace(modelName),
-		Mode:                        normalizedMode,
+		Mode:                        mode,
 		LatestUserText:              strings.TrimSpace(latestUserText),
 		Status:                      StreamStatusCreated,
 		Backlog:                     make([]StreamEvent, 0, 64),
@@ -105,8 +108,102 @@ func (broker *StreamBroker) OpenStream(requestID string, conversationID string, 
 		CreatedAt:                   now,
 		UpdatedAt:                   now,
 	}
-	broker.streams[normalizedRequestID] = stream
-	return stream, nil
+}
+
+func updateActiveStreamContextLocked(stream *ActiveStream, conversationID string, turnSeq int64, modelID string, modelName string, mode agentv1.AgentMode, latestUserText string) {
+	stream.ConversationID = strings.TrimSpace(conversationID)
+	stream.TurnSeq = turnSeq
+	stream.ModelID = strings.TrimSpace(modelID)
+	stream.ModelName = strings.TrimSpace(modelName)
+	stream.Mode = mode
+	stream.LatestUserText = strings.TrimSpace(latestUserText)
+	if stream.Status == "" {
+		stream.Status = StreamStatusCreated
+	}
+	if stream.PendingExecs == nil {
+		stream.PendingExecs = make(map[string]runtimecore.PendingExec)
+	}
+	if stream.PendingInteractions == nil {
+		stream.PendingInteractions = make(map[string]runtimecore.PendingInteraction)
+	}
+	if stream.PartialToolCallIDs == nil {
+		stream.PartialToolCallIDs = make(map[string]struct{})
+	}
+	if stream.PatchEditQueues == nil {
+		stream.PatchEditQueues = make(map[string][]queuedPatchEditOperation)
+	}
+	if stream.BackgroundShells == nil {
+		stream.BackgroundShells = make(map[string]*BackgroundShellState)
+	}
+	if stream.BackgroundShellsByMessageID == nil {
+		stream.BackgroundShellsByMessageID = make(map[uint32]string)
+	}
+	if stream.BackgroundShellsByExecID == nil {
+		stream.BackgroundShellsByExecID = make(map[string]string)
+	}
+	if stream.BackgroundShellActions == nil {
+		stream.BackgroundShellActions = make(map[string]time.Time)
+	}
+	stream.UpdatedAt = time.Now().UTC()
+}
+
+func resetActiveStreamForRetryLocked(stream *ActiveStream, conversationID string, turnSeq int64, modelID string, modelName string, mode agentv1.AgentMode, latestUserText string) {
+	if stream.TerminalCleanupTimer != nil {
+		stream.TerminalCleanupTimer.Stop()
+		stream.TerminalCleanupTimer = nil
+	}
+	stream.TerminalCleanupSeq.Add(1)
+	stream.ConversationID = strings.TrimSpace(conversationID)
+	stream.TurnSeq = turnSeq
+	stream.ModelID = strings.TrimSpace(modelID)
+	stream.ModelName = strings.TrimSpace(modelName)
+	stream.Mode = mode
+	stream.LatestUserText = strings.TrimSpace(latestUserText)
+	stream.Status = StreamStatusCreated
+	stream.ThinkingEffort = ""
+	stream.SubagentModelOverrides = nil
+	stream.CurrentModelCallID = ""
+	stream.ProviderActive = false
+	stream.ProviderCancel = nil
+	stream.ProviderPassCount = 0
+	stream.ActorMailbox = nil
+	stream.ActorDone = nil
+	stream.Phase = TurnPhaseIdle
+	stream.PendingProviderAction = providerActionNone
+	stream.PendingProviderCompletion = nil
+	stream.CurrentProviderToken = 0
+	stream.CurrentCompactionToken = 0
+	stream.TimerTokens = make(map[string]uint64)
+	stream.ProviderAccumulatedText = ""
+	stream.ProviderAccumulatedReasoning = ""
+	stream.ProviderAccumulatedReasoningSignature = ""
+	stream.ProviderAccumulatedReasoningSignatureSource = ""
+	stream.ProviderAccumulatedReasoningItemID = ""
+	stream.ProviderAccumulatedReasoningStatus = ""
+	stream.ProviderAccumulatedReasoningSummary = nil
+	stream.ProviderSyntheticThinkingStartedAt = time.Time{}
+	stream.ProviderSyntheticThinkingPublished = false
+	stream.ProviderFinishReason = ""
+	stream.ProviderUsage = turnUsageSnapshot{}
+	stream.ProviderTerminalToolInvocation = false
+	stream.PendingCompaction = nil
+	stream.Backlog = make([]StreamEvent, 0, 64)
+	stream.CheckpointConversation = nil
+	stream.PendingExecs = make(map[string]runtimecore.PendingExec)
+	stream.PendingInteractions = make(map[string]runtimecore.PendingInteraction)
+	stream.PartialToolCallIDs = make(map[string]struct{})
+	stream.PatchEditQueues = make(map[string][]queuedPatchEditOperation)
+	stream.MCPToolServers = make(map[string]string)
+	stream.WorkspacePaths = nil
+	stream.TerminalsFolder = ""
+	stream.RequestFileContents = nil
+	stream.RecentCompletedExecs = make(map[uint32]time.Time)
+	stream.BackgroundShells = make(map[string]*BackgroundShellState)
+	stream.BackgroundShellsByMessageID = make(map[uint32]string)
+	stream.BackgroundShellsByExecID = make(map[string]string)
+	stream.BackgroundShellActions = make(map[string]time.Time)
+	stream.CreatedAt = time.Now().UTC()
+	stream.UpdatedAt = stream.CreatedAt
 }
 
 // Get 返回指定 request 对应的活动流句柄。

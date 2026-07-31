@@ -11,32 +11,36 @@ import (
 )
 
 type runRewindDecision struct {
-	Evaluated               bool
-	Apply                   bool
-	Reason                  string
-	SkipReason              string
-	IncomingMessageID       string
-	AnchorMessageID         string
-	PrependUserMessageCount int
-	HasClientTurnCount      bool
-	ClientTurnCount         int
-	ServerTailTurnSeq       int64
-	ServerNextTurnSeq       int64
-	TargetTurnSeq           int64
-	TargetEntrySeq          int64
-	TargetRequestID         string
-	MatchCount              int
-	MatchStrategy           string
-	DroppedEntryCount       int
-	DroppedTurnCount        int
-	DroppedSeqStart         int64
-	DroppedSeqEnd           int64
-	PrefixEntries           []HistoryEntry
-	ProjectedEntries        []HistoryEntry
-	ProjectedEntryCount     int
-	ProjectedTailTurnSeq    int64
-	ProjectedLastMessageID  string
-	ProjectedLastRequestID  string
+	Evaluated                bool
+	Apply                    bool
+	Reason                   string
+	SkipReason               string
+	IncomingMessageID        string
+	AnchorMessageID          string
+	PrependUserMessageCount  int
+	HasClientTurnCount       bool
+	ClientTurnCount          int
+	ServerTailTurnSeq        int64
+	ServerNextTurnSeq        int64
+	TargetTurnSeq            int64
+	TargetEntrySeq           int64
+	TargetRequestID          string
+	MatchCount               int
+	MatchStrategy            string
+	DroppedEntryCount        int
+	DroppedTurnCount         int
+	DroppedSeqStart          int64
+	DroppedSeqEnd            int64
+	PrefixEntries            []HistoryEntry
+	ProjectedEntries         []HistoryEntry
+	ProjectedEntryCount      int
+	ProjectedTailTurnSeq     int64
+	ProjectedLastMessageID   string
+	ProjectedLastRequestID   string
+	IsFork                   bool
+	ForkParentConversationID string
+	ForkRootConversationID   string
+	ForkTargetConversationID string
 }
 
 type runRewindMatch struct {
@@ -106,21 +110,34 @@ func (service *Service) decideRunRewind(intent InboundIntent, conversation *Conv
 }
 
 func decideForkPrefixRewind(intent InboundIntent, conversation *ConversationFile, decision runRewindDecision) runRewindDecision {
+	decision.IsFork = true
 	decision.PrependUserMessageCount = len(intent.PrependUserMessages)
-	if conversation == nil || len(conversation.Entries) == 0 {
-		decision.SkipReason = "fork_prefix_history_missing"
-		return decision
+	var entries []HistoryEntry
+	if conversation != nil {
+		entries = conversation.Entries
 	}
 	match, messageID, strategy, matchCount, found := selectForkPrefixRewindMatch(
-		conversation.Entries,
+		entries,
 		intent.PrependUserMessages,
-		decision.ClientTurnCount,
-		decision.HasClientTurnCount,
 	)
 	if !found {
+		if positioned, ok := inferForkAnchorByTurnCount(
+			collectStoredUserMessages(entries),
+			entries,
+			decision.ClientTurnCount,
+			decision.HasClientTurnCount,
+		); ok {
+			match = positioned.Match
+			messageID = strings.TrimSpace(positioned.Message.GetMessageId())
+			strategy = "checkpoint_turn_position"
+			matchCount = 1
+			found = true
+		}
+	}
+	if !found {
 		prefixEntries := buildClientForkPrefixEntries(intent.PrependUserMessages, intent.RequestID)
-		if len(prefixEntries) == 0 {
-			decision.SkipReason = "fork_prefix_message_not_found"
+		if !isSafeForkPrefixRebuild(intent.PrependUserMessages, prefixEntries) {
+			decision.SkipReason = "fork_prefix_mismatch"
 			return decision
 		}
 		decision.Apply = true
@@ -131,7 +148,7 @@ func decideForkPrefixRewind(intent InboundIntent, conversation *ConversationFile
 		decision.TargetTurnSeq = maxHistoryTurnSeq(prefixEntries) + 1
 		decision.AnchorMessageID = lastUserMessageID(prefixEntries)
 		decision.IncomingMessageID = decision.AnchorMessageID
-		decision.DroppedEntryCount, decision.DroppedTurnCount, decision.DroppedSeqStart, decision.DroppedSeqEnd = droppedEntryStatsAfterEntry(conversation.Entries, 0)
+		decision.DroppedEntryCount, decision.DroppedTurnCount, decision.DroppedSeqStart, decision.DroppedSeqEnd = droppedEntryStatsAfterEntry(entries, 0)
 		return decision
 	}
 	decision.IncomingMessageID = messageID
@@ -175,7 +192,19 @@ func buildClientForkPrefixEntries(messages []*agentv1.UserMessage, requestID str
 	return entries
 }
 
-func selectForkPrefixRewindMatch(entries []HistoryEntry, messages []*agentv1.UserMessage, clientTurnCount int, hasClientTurnCount bool) (runRewindMatch, string, string, int, bool) {
+func isSafeForkPrefixRebuild(messages []*agentv1.UserMessage, entries []HistoryEntry) bool {
+	if len(messages) == 0 || len(entries) != len(messages) {
+		return false
+	}
+	for _, message := range messages {
+		if message == nil || (normalizedForkUserMessageText(message) == "" && strings.TrimSpace(message.GetMessageId()) == "") {
+			return false
+		}
+	}
+	return true
+}
+
+func selectForkPrefixRewindMatch(entries []HistoryEntry, messages []*agentv1.UserMessage) (runRewindMatch, string, string, int, bool) {
 	stored := collectStoredUserMessages(entries)
 	if len(stored) == 0 {
 		return runRewindMatch{}, "", "", 0, false
@@ -207,10 +236,6 @@ func selectForkPrefixRewindMatch(entries []HistoryEntry, messages []*agentv1.Use
 
 	if match, count, ok := matchForkUserMessageSequence(stored, messages); ok {
 		return match.Match, strings.TrimSpace(match.Message.GetMessageId()), "message_sequence", count, true
-	}
-
-	if inferred, ok := inferForkAnchorByTurnCount(stored, entries, clientTurnCount, hasClientTurnCount); ok {
-		return inferred.Match, strings.TrimSpace(inferred.Message.GetMessageId()), "turn_count", 1, true
 	}
 	return runRewindMatch{}, "", "", 0, false
 }
@@ -286,29 +311,20 @@ func matchForkUserMessageSequence(stored []storedUserMessageEntry, messages []*a
 }
 
 func inferForkAnchorByTurnCount(stored []storedUserMessageEntry, entries []HistoryEntry, clientTurnCount int, hasClientTurnCount bool) (storedUserMessageEntry, bool) {
-	if !hasClientTurnCount || clientTurnCount <= 0 {
+	if !hasClientTurnCount || clientTurnCount <= 0 || len(stored) == 0 {
 		return storedUserMessageEntry{}, false
 	}
 	serverTail := maxHistoryTurnSeq(entries)
-	delta := serverTail - int64(clientTurnCount)
-	if delta < -1 || delta > 1 {
+	if serverTail < int64(clientTurnCount) {
 		return storedUserMessageEntry{}, false
 	}
-	var selected *storedUserMessageEntry
-	for index := range stored {
+	for index := len(stored) - 1; index >= 0; index-- {
 		item := stored[index]
-		if item.Match.Entry.TurnSeq > int64(clientTurnCount) {
-			continue
-		}
-		if selected == nil || item.Match.Entry.TurnSeq >= selected.Match.Entry.TurnSeq {
-			candidate := item
-			selected = &candidate
+		if item.Match.Entry.TurnSeq == int64(clientTurnCount) {
+			return item, true
 		}
 	}
-	if selected == nil {
-		return storedUserMessageEntry{}, false
-	}
-	return *selected, true
+	return storedUserMessageEntry{}, false
 }
 
 func forkUserMessageText(message *agentv1.UserMessage) string {
@@ -574,27 +590,35 @@ func (service *Service) logRunRewindDecision(requestID string, conversationID st
 		return
 	}
 	fields := map[string]any{
-		"message_id":                 decision.IncomingMessageID,
-		"anchor_message_id":          decision.AnchorMessageID,
-		"prepend_user_message_count": decision.PrependUserMessageCount,
-		"apply":                      decision.Apply,
-		"reason":                     decision.Reason,
-		"skip_reason":                decision.SkipReason,
-		"fork_match_strategy":        decision.MatchStrategy,
-		"target_turn_seq":            decision.TargetTurnSeq,
-		"target_entry_seq":           decision.TargetEntrySeq,
-		"target_request_id":          decision.TargetRequestID,
-		"server_tail_turn_seq":       decision.ServerTailTurnSeq,
-		"server_next_turn_seq":       decision.ServerNextTurnSeq,
-		"match_count":                decision.MatchCount,
-		"dropped_entry_count":        decision.DroppedEntryCount,
-		"dropped_turn_count":         decision.DroppedTurnCount,
-		"dropped_seq_start":          decision.DroppedSeqStart,
-		"dropped_seq_end":            decision.DroppedSeqEnd,
-		"projected_entry_count":      decision.ProjectedEntryCount,
-		"projected_tail_turn_seq":    decision.ProjectedTailTurnSeq,
-		"projected_last_message_id":  decision.ProjectedLastMessageID,
-		"projected_last_request_id":  decision.ProjectedLastRequestID,
+		"message_id":                    decision.IncomingMessageID,
+		"anchor_message_id":             decision.AnchorMessageID,
+		"prepend_user_message_count":    decision.PrependUserMessageCount,
+		"apply":                         decision.Apply,
+		"reason":                        decision.Reason,
+		"skip_reason":                   decision.SkipReason,
+		"fork_match_strategy":           decision.MatchStrategy,
+		"target_turn_seq":               decision.TargetTurnSeq,
+		"target_entry_seq":              decision.TargetEntrySeq,
+		"target_request_id":             decision.TargetRequestID,
+		"server_tail_turn_seq":          decision.ServerTailTurnSeq,
+		"server_next_turn_seq":          decision.ServerNextTurnSeq,
+		"match_count":                   decision.MatchCount,
+		"dropped_entry_count":           decision.DroppedEntryCount,
+		"dropped_turn_count":            decision.DroppedTurnCount,
+		"dropped_seq_start":             decision.DroppedSeqStart,
+		"dropped_seq_end":               decision.DroppedSeqEnd,
+		"projected_entry_count":         decision.ProjectedEntryCount,
+		"projected_tail_turn_seq":       decision.ProjectedTailTurnSeq,
+		"projected_last_message_id":     decision.ProjectedLastMessageID,
+		"projected_last_request_id":     decision.ProjectedLastRequestID,
+		"is_fork":                       decision.IsFork,
+		"parent_conversation_id":        decision.ForkParentConversationID,
+		"fork_parent_conversation_id":   decision.ForkParentConversationID,
+		"root_conversation_id":          decision.ForkRootConversationID,
+		"target_conversation_id":        decision.ForkTargetConversationID,
+		"fork_target_conversation_id":   decision.ForkTargetConversationID,
+		"replaceCheckpointConversation": decision.Apply,
+		"ReplaceEntries":                decision.Apply && !decision.IsFork,
 	}
 	if decision.HasClientTurnCount {
 		fields["client_turn_count"] = decision.ClientTurnCount

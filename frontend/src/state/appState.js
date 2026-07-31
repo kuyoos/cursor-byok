@@ -11,6 +11,7 @@ import {
   openConfigWindow as openConfig,
   loadUserConfig,
   openLogsDirectory,
+  openUsageStatsWindow as openUsageStats,
   openModelConfig,
   openModelEditor,
   saveUserConfig,
@@ -695,9 +696,49 @@ function normalizeUsageAttributionMap(source) {
   }));
 }
 
+function normalizeUsageDaily(source) {
+  return asArray(source).map((value) => {
+    const raw = value && typeof value === "object" ? value : {};
+    return {
+      date: asString(raw.date),
+      providerCalls: Math.max(0, asNumber(raw.providerCalls)),
+      turnsTotal: Math.max(0, asNumber(raw.turnsTotal)),
+      validTurnsTotal: Math.max(0, asNumber(raw.validTurnsTotal)),
+      invalidTurnsTotal: Math.max(0, asNumber(raw.invalidTurnsTotal)),
+      inputTokens: Math.max(0, asNumber(raw.inputTokens)),
+      outputTokens: Math.max(0, asNumber(raw.outputTokens)),
+      cacheReadTokens: Math.max(0, asNumber(raw.cacheReadTokens)),
+      cacheWriteTokens: Math.max(0, asNumber(raw.cacheWriteTokens)),
+      totalTokens: Math.max(0, asNumber(raw.totalTokens)),
+    };
+  });
+}
+
+function normalizeUsageEvents(source) {
+  return asArray(source).map((value) => {
+    const raw = value && typeof value === "object" ? value : {};
+    return {
+      eventID: asString(raw.eventID),
+      kind: asString(raw.kind),
+      status: asString(raw.status),
+      providerID: asString(raw.providerID),
+      modelConfigID: asString(raw.modelConfigID),
+      model: asString(raw.model),
+      at: asString(raw.at),
+      inputTokens: Math.max(0, asNumber(raw.inputTokens)),
+      outputTokens: Math.max(0, asNumber(raw.outputTokens)),
+      cacheReadTokens: Math.max(0, asNumber(raw.cacheReadTokens)),
+      cacheWriteTokens: Math.max(0, asNumber(raw.cacheWriteTokens)),
+      totalTokens: Math.max(0, asNumber(raw.totalTokens)),
+      usagePresent: asBoolean(raw.usagePresent),
+    };
+  });
+}
+
 function createEmptyHomeMetrics() {
   return {
     turnsTotal: 0,
+    providerCallsTotal: 0,
     validTurnsTotal: 0,
     invalidTurnsTotal: 0,
     requestTokensTotal: 0,
@@ -705,6 +746,8 @@ function createEmptyHomeMetrics() {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     cacheHitRate: null,
+    daily: [],
+    recentEvents: [],
     byProvider: {},
     byProviderModel: {},
   };
@@ -764,13 +807,16 @@ function normalizeHomeMetrics(source) {
   const providerCallsTotal = asPositiveInteger(raw.providerCallsTotal ?? raw.turnsTotal);
   return {
     turnsTotal: providerCallsTotal,
-    validTurnsTotal: providerCallsTotal,
+    providerCallsTotal,
+    validTurnsTotal: asPositiveInteger(raw.validTurnsTotal),
     invalidTurnsTotal: 0,
     requestTokensTotal: asPositiveInteger(raw.requestTokensTotal),
     promptTokensTotal: asPositiveInteger(raw.promptTokensTotal),
     cacheReadTokens: asPositiveInteger(raw.cacheReadTokens),
     cacheWriteTokens: asPositiveInteger(raw.cacheWriteTokens),
     cacheHitRate: asNullableRate(raw.cacheHitRate),
+    daily: normalizeUsageDaily(raw.daily),
+    recentEvents: normalizeUsageEvents(raw.recentEvents),
     byProvider: normalizeUsageAttributionMap(raw.byProvider),
     byProviderModel: normalizeUsageAttributionMap(raw.byProviderModel),
   };
@@ -1571,6 +1617,10 @@ export async function toggleService() {
 
 export async function openLocalLogsDirectory() {
   await openLogsDirectory();
+}
+
+export async function openUsageStatsWindow() {
+  await openUsageStats();
 }
 
 export async function openConfigWindow() {

@@ -495,6 +495,10 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 		return nil, err
 	}
 	state.Mode = &mode
+	if strings.TrimSpace(conversation.ForkedFromConversationID) != "" {
+		activeBranch := strings.TrimSpace(conversation.ConversationID)
+		state.ActiveBranchName = &activeBranch
+	}
 	structuredState, err := projectConversationStructuredState(conversation)
 	if err != nil {
 		return nil, err

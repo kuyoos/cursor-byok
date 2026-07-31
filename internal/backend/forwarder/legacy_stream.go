@@ -38,6 +38,9 @@ func newLegacyRunSSEHeaderWriter(writer http.ResponseWriter) *legacyRunSSEHeader
 
 // WriteHeader 在输出状态码前补齐 legacy 所需响应头。
 func (writer *legacyRunSSEHeaderWriter) WriteHeader(statusCode int) {
+	if writer.wroteHeader {
+		return
+	}
 	writer.applyLegacyHeaders()
 	writer.wroteHeader = true
 	writer.ResponseWriter.WriteHeader(statusCode)
@@ -53,6 +56,9 @@ func (writer *legacyRunSSEHeaderWriter) Write(payload []byte) (int, error) {
 
 // Flush 尝试把底层缓冲区立即刷新给客户端。
 func (writer *legacyRunSSEHeaderWriter) Flush() {
+	if !writer.wroteHeader {
+		writer.WriteHeader(http.StatusOK)
+	}
 	if flusher, ok := writer.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}

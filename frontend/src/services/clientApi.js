@@ -19,6 +19,7 @@ import {
   OpenConfigWindow,
   OpenFooterAuthorHome,
   OpenHistoryWindow,
+  OpenUsageStatsWindow,
   OpenModelConfigWindow,
   OpenModelEditorWindow,
 } from "@bindings/cursor/internal/bridge/windowservice.js";
@@ -88,6 +89,10 @@ export function stopProxyService() {
 
 export function openLogsDirectory() {
   return withApiLogging("OpenHistoryWindow", undefined, () => OpenHistoryWindow());
+}
+
+export function openUsageStatsWindow() {
+  return withApiLogging("OpenUsageStatsWindow", undefined, () => OpenUsageStatsWindow());
 }
 
 export function openConfigWindow() {

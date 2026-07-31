@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 )
 
 type usageFileAttribution struct {
@@ -17,6 +18,35 @@ type usageFileAttribution struct {
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
 	TotalTokens      int64  `json:"total_tokens"`
+}
+
+type usageFileDaily struct {
+	Date              string `json:"date"`
+	ProviderCalls     int64  `json:"provider_calls"`
+	TurnsTotal        int64  `json:"turns_total"`
+	ValidTurnsTotal   int64  `json:"valid_turns_total"`
+	InvalidTurnsTotal int64  `json:"invalid_turns_total"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	CacheReadTokens   int64  `json:"cache_read_tokens"`
+	CacheWriteTokens  int64  `json:"cache_write_tokens"`
+	TotalTokens       int64  `json:"total_tokens"`
+}
+
+type usageFileEvent struct {
+	EventID          string    `json:"event_id"`
+	Kind             string    `json:"kind,omitempty"`
+	Status           string    `json:"status,omitempty"`
+	ProviderID       string    `json:"provider_id,omitempty"`
+	ModelConfigID    string    `json:"model_config_id,omitempty"`
+	Model            string    `json:"model,omitempty"`
+	At               time.Time `json:"at"`
+	InputTokens      int64     `json:"input_tokens"`
+	OutputTokens     int64     `json:"output_tokens"`
+	CacheReadTokens  int64     `json:"cache_read_tokens"`
+	CacheWriteTokens int64     `json:"cache_write_tokens"`
+	TotalTokens      int64     `json:"total_tokens"`
+	UsagePresent     bool      `json:"usage_present"`
 }
 
 type usageFileDocument struct {
@@ -33,6 +63,8 @@ type usageFileDocument struct {
 	} `json:"totals"`
 	ByProvider      map[string]usageFileAttribution `json:"by_provider"`
 	ByProviderModel map[string]usageFileAttribution `json:"by_provider_model"`
+	Daily           []usageFileDaily                `json:"daily"`
+	RecentEvents    []usageFileEvent                `json:"recent_events"`
 }
 
 func LoadUsageSummary(path string) (Summary, error) {
@@ -73,9 +105,59 @@ func LoadUsageSummary(path string) (Summary, error) {
 		CacheReadTokens:    totals.CacheReadTokens,
 		CacheWriteTokens:   totals.CacheWriteTokens,
 		CacheHitRate:       cacheHitRateFromTotals(totals),
+		Daily:              toDaily(doc.Daily),
+		RecentEvents:       toUsageEvents(doc.RecentEvents),
 		ByProvider:         byProvider,
 		ByProviderModel:    byProviderModel,
 	}, nil
+}
+
+func toDaily(items []usageFileDaily) []Daily {
+	result := make([]Daily, 0, len(items))
+	for _, item := range items {
+		result = append(result, Daily{
+			Date:              item.Date,
+			ProviderCalls:     item.ProviderCalls,
+			TurnsTotal:        item.TurnsTotal,
+			ValidTurnsTotal:   item.ValidTurnsTotal,
+			InvalidTurnsTotal: item.InvalidTurnsTotal,
+			InputTokens:       item.InputTokens,
+			OutputTokens:      item.OutputTokens,
+			CacheReadTokens:   item.CacheReadTokens,
+			CacheWriteTokens:  item.CacheWriteTokens,
+			TotalTokens:       item.TotalTokens,
+		})
+	}
+	return result
+}
+
+func toUsageEvents(items []usageFileEvent) []UsageEvent {
+	result := make([]UsageEvent, 0, len(items))
+	for _, item := range items {
+		result = append(result, UsageEvent{
+			EventID:          item.EventID,
+			Kind:             item.Kind,
+			Status:           item.Status,
+			ProviderID:       item.ProviderID,
+			ModelConfigID:    item.ModelConfigID,
+			Model:            item.Model,
+			At:               formatUsageEventTime(item.At),
+			InputTokens:      item.InputTokens,
+			OutputTokens:     item.OutputTokens,
+			CacheReadTokens:  item.CacheReadTokens,
+			CacheWriteTokens: item.CacheWriteTokens,
+			TotalTokens:      item.TotalTokens,
+			UsagePresent:     item.UsagePresent,
+		})
+	}
+	return result
+}
+
+func formatUsageEventTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format(time.RFC3339)
 }
 
 func toAttribution(item usageFileAttribution) Attribution {

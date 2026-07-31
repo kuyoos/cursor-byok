@@ -2,6 +2,7 @@ import { createRouter, createWebHashHistory } from "vue-router";
 import Home from "@/views/Home.vue";
 import ModelConfig from "@/views/ModelConfig.vue";
 import ModelEditor from "@/views/ModelEditor.vue";
+import UsageStats from "@/views/UsageStats.vue";
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -17,9 +18,9 @@ const router = createRouter({
       meta: { showIcon: false, title: "模型配置", directlyClose: true },
     },
     {
-      path: "/model-editor",
-      component: ModelEditor,
-      meta: { showIcon: false, title: "模型编辑", directlyClose: true },
+      path: "/usage-stats",
+      component: UsageStats,
+      meta: { showIcon: false, title: "使用统计", directlyClose: true },
     },
   ],
 });
