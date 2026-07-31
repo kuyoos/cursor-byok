@@ -32,6 +32,7 @@ func NormalizeProviderConfigs(input []ProviderConfig) ([]ProviderConfig, error) 
 			DiscoveryPath:        normalizeDiscoveryPath(source.DiscoveryPath),
 			CustomHeadersEnabled: source.CustomHeadersEnabled,
 			CustomHeadersJSON:    strings.TrimSpace(source.CustomHeadersJSON),
+			DiscoveredModels:     uniqueTrimmedStrings(source.DiscoveredModels),
 			Models:               []ProviderModelConfig{},
 		}
 		if provider.ID == "" {

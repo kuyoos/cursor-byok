@@ -2801,13 +2801,18 @@ func extractRuntimeThinkingEffortFromRequestedModel(model *agentv1.RequestedMode
 }
 
 func isRuntimeThinkingEffortParameterID(raw string) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case runtimeThinkingEffortParameterID,
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	normalized = strings.NewReplacer("_", "", "-", "", " ", "").Replace(normalized)
+	switch normalized {
+	case "thinkinglevel",
+		"thinkingeffort",
+		"thinkingintensity",
 		"reasoning",
-		"reasoning_effort",
-		"thinking_intensity",
-		"anthropic_thinking_effort",
-		"openai_reasoning_effort":
+		"reasoningeffort",
+		"effort",
+		"anthropicthinkinglevel",
+		"anthropicthinkingeffort",
+		"openaireasoningeffort":
 		return true
 	default:
 		return false

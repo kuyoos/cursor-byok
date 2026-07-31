@@ -2,6 +2,8 @@
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Input from "@/components/ui/Input.vue";
+import Select from "@/components/ui/Select.vue";
+import Tooltip from "@/components/ui/Tooltip.vue";
 import { showModal } from "@/composables/useModal";
 import {
   appState,
@@ -28,6 +30,21 @@ const customModelIDs = ref({});
 const syncing = ref({});
 const connectivity = ref({});
 const modelTests = ref({});
+const reasoningEffortOptions = [
+  { label: "低", value: "low" },
+  { label: "中", value: "medium" },
+  { label: "高", value: "high" },
+  { label: "极高", value: "xhigh" },
+  { label: "最高", value: "max" },
+];
+
+const anthropicThinkingEffortOptions = [
+  { label: "低", value: "low" },
+  { label: "中", value: "medium" },
+  { label: "高", value: "high" },
+  { label: "极高", value: "xhigh" },
+  { label: "最高", value: "max" },
+];
 
 const enabledCount = computed(() => drafts.value.filter((provider) => provider.models.length > 0).length);
 
@@ -46,7 +63,7 @@ function modelKey(provider, model, providerIndex) {
 function discoveredModels(provider, index) {
   const key = providerKey(provider, index);
   const selected = selectedModel(provider)?.modelID;
-  return [...new Set([...(fetchedModels.value[key] || []), selected].filter(Boolean))];
+  return [...new Set([...(provider.discoveredModels || []), ...(fetchedModels.value[key] || []), selected].filter(Boolean))];
 }
 
 function providerUsage(provider) {
@@ -103,6 +120,13 @@ async function fetchModels(provider, index) {
   try {
     const result = await discoverProviderModels(provider);
     fetchedModels.value[key] = result.models || [];
+    if (result.provider) {
+      Object.assign(provider, result.provider);
+      const saved = await saveProviders(drafts.value);
+      if (!saved.ok) {
+        await showError("保存获取到的模型失败", saved.error);
+      }
+    }
     connectivity.value[key] = {
       reachable: true,
       statusCode: result.statusCode,
@@ -272,7 +296,14 @@ onMounted(async () => {
           </div>
 
           <div class="flex flex-wrap items-center justify-between gap-2 border-t border-[#343434] pt-3">
-            <div class="text-xs" :class="connectionClass(provider, providerIndex)">{{ connectionText(provider, providerIndex) }}</div>
+            <div class="flex min-w-0 items-center gap-2 text-xs" :class="connectionClass(provider, providerIndex)">
+              <Tooltip
+                v-if="connectivity[providerKey(provider, providerIndex)]?.error"
+                :content="connectivity[providerKey(provider, providerIndex)].error"
+                copyable
+              />
+              <span class="truncate">{{ connectionText(provider, providerIndex) }}</span>
+            </div>
             <div class="flex items-center gap-2">
               <Button variant="default" :disabled="syncing[providerKey(provider, providerIndex)]" @click="testConnectivity(provider, providerIndex)">测试连通性</Button>
               <Button variant="default" :disabled="syncing[providerKey(provider, providerIndex)]" @click="fetchModels(provider, providerIndex)">
@@ -321,21 +352,40 @@ onMounted(async () => {
                     @input="setContextWindow(selectedModel(provider), $event.target.value)"
                   />
                 </label>
+                <label class="space-y-1 text-xs text-[#a3a3a3]">
+                  <span>{{ provider.type === "anthropic" ? "思考等级" : "推理强度" }}</span>
+                  <Select
+                    v-if="provider.type === 'openai'"
+                    v-model="selectedModel(provider).reasoningEffort"
+                    :options="reasoningEffortOptions"
+                  />
+                  <Select
+                    v-else
+                    v-model="selectedModel(provider).anthropicThinkingEffort"
+                    :options="anthropicThinkingEffortOptions"
+                  />
+                </label>
                 <div class="space-y-1 text-xs text-[#a3a3a3]">
                   <div>Cursor 悬停备注</div>
                   <div class="flex h-9 items-center rounded-[6px] border border-[#343434] bg-[#1f1f1f] px-3 text-sm text-[#d4d4d4]">
                     {{ providerUsageSummary(provider) }}
                   </div>
                 </div>
-              </div>
-              <div class="flex flex-wrap items-center justify-between gap-3">
+
                 <div class="min-w-0">
                   <div class="text-xs text-[#a3a3a3]">Cursor 显示名称</div>
                   <div class="mt-1 truncate text-sm text-white">{{ buildProviderModelDisplayName(provider, selectedModel(provider)) }}</div>
                 </div>
                 <div class="flex items-center gap-3">
-                  <div class="max-w-[260px] truncate text-xs" :class="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'error' ? 'text-[#f87171]' : 'text-[#8f8f8f]'">
-                    {{ modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.summaryText || "未测试" }}
+                  <div class="flex items-center gap-2">
+                    <Tooltip
+                      v-if="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'error'"
+                      :content="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.summaryText || '模型测试失败'"
+                      copyable
+                    />
+                    <div class="max-w-[260px] truncate text-xs" :class="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'error' ? 'text-[#f87171]' : 'text-[#8f8f8f]'">
+                      {{ modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.summaryText || "未测试" }}
+                    </div>
                   </div>
                   <Button variant="text" :disabled="modelTests[modelKey(provider, selectedModel(provider), providerIndex)]?.status === 'running'" @click="testModel(provider, selectedModel(provider), providerIndex, 0)">测试模型</Button>
                 </div>

@@ -472,6 +472,7 @@ export function createEmptyProvider() {
     discoveryPath: "/models",
     customHeadersEnabled: false,
     customHeadersJSON: CUSTOM_HEADERS_DEFAULT_JSON,
+    discoveredModels: [],
     models: [],
   };
 }
@@ -514,6 +515,7 @@ export function normalizeProvider(source) {
     discoveryPath: asString(raw.discoveryPath) || "/models",
     customHeadersEnabled: asBoolean(raw.customHeadersEnabled),
     customHeadersJSON: asString(raw.customHeadersJSON) || CUSTOM_HEADERS_DEFAULT_JSON,
+    discoveredModels: [...new Set(asArray(raw.discoveredModels).map(asString).filter(Boolean))],
     models: selectedProviderModels(raw.models),
   };
 }
@@ -550,7 +552,8 @@ export function validateProviders(source) {
 export function mergeDiscoveredProviderModels(provider, modelIDs) {
   const current = normalizeProvider(provider);
   const discovered = asArray(modelIDs).map(asString).filter(Boolean);
-  const discoveredKeys = new Set(discovered.map((modelID) => modelID.toLowerCase()));
+  const allDiscovered = [...new Set([...current.discoveredModels, ...discovered])];
+  const discoveredKeys = new Set(allDiscovered.map((modelID) => modelID.toLowerCase()));
   const existing = new Map(current.models.map((model) => [model.modelID.toLowerCase(), model]));
   const retained = current.models.map((model) => ({
     ...model,
@@ -562,7 +565,7 @@ export function mergeDiscoveredProviderModels(provider, modelIDs) {
     }
     retained.push(createEmptyProviderModel(modelID));
   }
-  return { ...current, models: retained };
+  return { ...current, discoveredModels: allDiscovered, models: retained };
 }
 
 export function createModelAdapterFromProvider(source) {

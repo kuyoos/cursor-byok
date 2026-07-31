@@ -84,6 +84,7 @@ type ProviderConfig struct {
 	DiscoveryPath        string                `json:"discoveryPath" yaml:"discoveryPath"`
 	CustomHeadersEnabled bool                  `json:"customHeadersEnabled" yaml:"customHeadersEnabled"`
 	CustomHeadersJSON    string                `json:"customHeadersJSON" yaml:"customHeadersJSON"`
+	DiscoveredModels     []string              `json:"discoveredModels,omitempty" yaml:"discoveredModels,omitempty"`
 	Models               []ProviderModelConfig `json:"models" yaml:"models"`
 }
 
