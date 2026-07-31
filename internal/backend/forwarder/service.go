@@ -871,7 +871,28 @@ func (service *Service) hasInitializedRun(intent InboundIntent) bool {
 	}
 	stream, ok := service.broker.Get(intent.RequestID)
 	if !ok || stream == nil {
-		return false
+		if service.store == nil {
+			return false
+		}
+		targetConversationID := strings.TrimSpace(intent.ConversationID)
+		if len(intent.PrependUserMessages) > 0 {
+			targetConversationID = ForkConversationID(intent.ConversationID, intent.RequestID)
+		}
+		conversation, err := service.store.LoadConversation(targetConversationID)
+		if err != nil || conversation == nil || strings.TrimSpace(conversation.CurrentRequestID) != strings.TrimSpace(intent.RequestID) {
+			return false
+		}
+		if len(intent.PrependUserMessages) > 0 &&
+			(strings.TrimSpace(conversation.ForkedFromConversationID) != strings.TrimSpace(intent.ConversationID) ||
+				strings.TrimSpace(conversation.ForkRequestID) != strings.TrimSpace(intent.RequestID)) {
+			return false
+		}
+		switch strings.TrimSpace(conversation.CurrentLoopStatus) {
+		case "completed", "canceled":
+			return true
+		default:
+			return false
+		}
 	}
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
@@ -890,10 +911,13 @@ func (service *Service) hasInitializedRun(intent InboundIntent) bool {
 			return false
 		}
 	}
-	if intent.Prewarm || isTerminalStreamStatus(stream.Status) {
+	if intent.Prewarm || stream.Status == StreamStatusCompleted || stream.Status == StreamStatusCanceled {
 		return true
 	}
-	return stream.ProviderActive || stream.ProviderPassCount > 0 || stream.PendingProviderAction != providerActionNone
+	if stream.Status == StreamStatusFailed || stream.Phase == TurnPhaseFailed {
+		return false
+	}
+	return stream.ProviderActive || stream.ProviderPassCount != 0 || stream.PendingProviderAction != providerActionNone
 }
 
 func (service *Service) loadPreviousSummaryReplay(conversationID string) ([][]byte, bool, error) {

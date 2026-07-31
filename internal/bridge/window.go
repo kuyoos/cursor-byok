@@ -245,9 +245,16 @@ func (s *WindowService) OpenUsageStatsWindow() {
 		return
 	}
 	if s.usageStatsWindow != nil {
-		s.usageStatsWindow.Show()
-		s.usageStatsWindow.Focus()
-		return
+		if !s.usageStatsWindow.IsVisible() {
+			s.usageStatsWindow = nil
+		} else {
+			// 每次打开都校正入口，避免复用窗口时停留在根路由。
+			s.usageStatsWindow.SetURL("/#/usage-stats")
+			s.usageStatsWindow.Show()
+			s.usageStatsWindow.Restore()
+			s.usageStatsWindow.Focus()
+			return
+		}
 	}
 
 	win := s.app.Window.NewWithOptions(application.WebviewWindowOptions{
