@@ -976,16 +976,27 @@ func (service *Service) handleCancelIntent(intent InboundIntent) error {
 			Message: buildExecAbortMessage(pending),
 		})
 	}
+	pendingBlobCheckpoint := false
 	if hasCheckpoint {
 		if err := service.publishCheckpoint(stream.RequestID, stream.ConversationID); err != nil {
 			return err
 		}
+		pendingBlobCheckpoint = setPendingCheckpointTerminalAction(stream, checkpointTerminalAction{
+			kind:          checkpointTerminalActionCancel,
+			cancelMessage: firstNonEmpty(intent.CancelReason, "[canceled] User aborted request"),
+		})
 	}
 	clearPendingProviderCompletion(stream)
 	stream.mu.Lock()
 	stream.PendingProviderAction = providerActionNone
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
+	if pendingBlobCheckpoint {
+		if cancel := stopActiveProvider(stream); cancel != nil {
+			cancel()
+		}
+		return service.finalizePendingCheckpoint(stream)
+	}
 	service.setTurnPhase(stream, TurnPhaseCanceled)
 	return service.broker.Cancel(intent.RequestID, firstNonEmpty(intent.CancelReason, "[canceled] User aborted request"))
 }
@@ -2247,6 +2258,13 @@ func (service *Service) completeSuccessfulTurn(stream *ActiveStream, completion 
 	if err := service.publishCheckpoint(requestID, conversationID); err != nil {
 		return err
 	}
+	completionAction := checkpointTerminalAction{
+		kind:       checkpointTerminalActionComplete,
+		completion: completion,
+	}
+	if setPendingCheckpointTerminalAction(stream, completionAction) {
+		return service.finalizePendingCheckpoint(stream)
+	}
 	if err := service.broker.Publish(requestID, StreamEvent{
 		Message: buildTurnEndedMessage(usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheWriteTokens),
 	}); err != nil {
@@ -2274,28 +2292,7 @@ func (service *Service) failStreamIfNonTerminal(stream *ActiveStream, terminalCo
 
 // publishCheckpoint 按当前内存会话镜像投影出 checkpoint，并广播给所有 RunSSE 订阅者。
 func (service *Service) publishCheckpoint(requestID string, conversationID string) error {
-	stream, ok := service.broker.Get(requestID)
-	if !ok || stream == nil {
-		return fmt.Errorf("request is not active: %s", requestID)
-	}
-	conversation, pendingExecs, pendingInteractions, err := service.snapshotCheckpointConversation(stream)
-	if err != nil {
-		return err
-	}
-	requestedConversationID := strings.TrimSpace(conversationID)
-	actualConversationID := strings.TrimSpace(conversation.ConversationID)
-	if requestedConversationID != "" && actualConversationID != "" && requestedConversationID != actualConversationID {
-		return fmt.Errorf("checkpoint conversation mismatch: requested=%s actual=%s", requestedConversationID, actualConversationID)
-	}
-	state, err := service.projector.ProjectLegacyCheckpoint(conversation)
-	if err != nil {
-		return err
-	}
-	state.PendingToolCalls = buildPendingToolCalls(pendingExecs, pendingInteractions)
-	service.rewriteCheckpointTokenDetailsForClient(stream, conversation, state)
-	return service.broker.Publish(requestID, StreamEvent{
-		Message: buildCheckpointMessage(state),
-	})
+	return service.publishCheckpointWithBlobs(requestID, conversationID)
 }
 
 func (service *Service) rewriteCheckpointTokenDetailsForClient(stream *ActiveStream, conversation *ConversationFile, state *agentv1.ConversationStateStructure) {

@@ -385,6 +385,7 @@ func (service *Service) reconcileStream(stream *ActiveStream) error {
 		return nil
 	}
 	providerActive := stream.ProviderActive
+	pendingCheckpoint := stream.PendingCheckpoint != nil
 	pendingExecCount := len(stream.PendingExecs)
 	pendingInteractionCount := len(stream.PendingInteractions)
 	hasPendingCompaction := stream.PendingCompaction != nil
@@ -392,6 +393,10 @@ func (service *Service) reconcileStream(stream *ActiveStream) error {
 	completion := stream.PendingProviderCompletion
 	stream.mu.Unlock()
 
+	if pendingCheckpoint {
+		service.setTurnPhase(stream, TurnPhaseCheckpointing)
+		return nil
+	}
 	if providerActive {
 		return nil
 	}
