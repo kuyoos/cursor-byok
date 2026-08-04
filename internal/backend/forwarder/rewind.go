@@ -53,7 +53,7 @@ type storedUserMessageEntry struct {
 }
 
 func (service *Service) decideRunRewind(intent InboundIntent, conversation *ConversationFile) runRewindDecision {
-	decision := runRewindDecision{ClientTurnCount: -1}
+	decision := runRewindDecision{}
 	if !shouldEvaluateRunRewind(intent) {
 		return decision
 	}
@@ -399,7 +399,7 @@ func selectRunRewindMatch(matches []runRewindMatch, clientTurnCount int, hasClie
 	if len(matches) == 0 {
 		return runRewindMatch{}, "no_match"
 	}
-	if hasClientTurnCount && clientTurnCount >= 0 {
+	if hasClientTurnCount {
 		targetTurnSeq := int64(clientTurnCount) + 1
 		for _, match := range matches {
 			if match.Entry.TurnSeq == targetTurnSeq {

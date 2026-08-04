@@ -85,28 +85,30 @@ func (broker *StreamBroker) OpenStream(requestID string, conversationID string, 
 func newActiveStream(requestID string, conversationID string, turnSeq int64, modelID string, modelName string, mode agentv1.AgentMode, latestUserText string) *ActiveStream {
 	now := time.Now().UTC()
 	return &ActiveStream{
-		RequestID:                   requestID,
-		ConversationID:              strings.TrimSpace(conversationID),
-		TurnSeq:                     turnSeq,
-		ModelID:                     strings.TrimSpace(modelID),
-		ModelName:                   strings.TrimSpace(modelName),
-		Mode:                        mode,
-		LatestUserText:              strings.TrimSpace(latestUserText),
-		Status:                      StreamStatusCreated,
-		Backlog:                     make([]StreamEvent, 0, 64),
-		Subscribers:                 make(map[string]*StreamSubscriber),
-		PendingExecs:                make(map[string]runtimecore.PendingExec),
-		PendingInteractions:         make(map[string]runtimecore.PendingInteraction),
-		PartialToolCallIDs:          make(map[string]struct{}),
-		PatchEditQueues:             make(map[string][]queuedPatchEditOperation),
-		MCPToolServers:              make(map[string]string),
-		RecentCompletedExecs:        make(map[uint32]time.Time),
-		BackgroundShells:            make(map[string]*BackgroundShellState),
-		BackgroundShellsByMessageID: make(map[uint32]string),
-		BackgroundShellsByExecID:    make(map[string]string),
-		BackgroundShellActions:      make(map[string]time.Time),
-		CreatedAt:                   now,
-		UpdatedAt:                   now,
+		RequestID:                     requestID,
+		ConversationID:                strings.TrimSpace(conversationID),
+		TurnSeq:                       turnSeq,
+		ModelID:                       strings.TrimSpace(modelID),
+		ModelName:                     strings.TrimSpace(modelName),
+		Mode:                          mode,
+		LatestUserText:                strings.TrimSpace(latestUserText),
+		Status:                        StreamStatusCreated,
+		Backlog:                       make([]StreamEvent, 0, 64),
+		Subscribers:                   make(map[string]*StreamSubscriber),
+		PendingExecs:                  make(map[string]runtimecore.PendingExec),
+		PendingInteractions:           make(map[string]runtimecore.PendingInteraction),
+		PartialToolCallIDs:            make(map[string]struct{}),
+		PatchEditQueues:               make(map[string][]queuedPatchEditOperation),
+		MCPToolServers:                make(map[string]string),
+		RecentCompletedExecs:          make(map[uint32]time.Time),
+		BackgroundShells:              make(map[string]*BackgroundShellState),
+		BackgroundShellsByMessageID:   make(map[uint32]string),
+		BackgroundShellsByExecID:      make(map[string]string),
+		BackgroundShellActions:        make(map[string]time.Time),
+		PendingCheckpointBlobWrites:   make(map[uint32]pendingCheckpointBlobWrite),
+		PendingCheckpointBlobRequests: make(map[string]uint32),
+		CreatedAt:                     now,
+		UpdatedAt:                     now,
 	}
 }
 
@@ -143,6 +145,12 @@ func updateActiveStreamContextLocked(stream *ActiveStream, conversationID string
 	}
 	if stream.BackgroundShellActions == nil {
 		stream.BackgroundShellActions = make(map[string]time.Time)
+	}
+	if stream.PendingCheckpointBlobWrites == nil {
+		stream.PendingCheckpointBlobWrites = make(map[uint32]pendingCheckpointBlobWrite)
+	}
+	if stream.PendingCheckpointBlobRequests == nil {
+		stream.PendingCheckpointBlobRequests = make(map[string]uint32)
 	}
 	stream.UpdatedAt = time.Now().UTC()
 }
@@ -187,6 +195,11 @@ func resetActiveStreamForRetryLocked(stream *ActiveStream, conversationID string
 	stream.ProviderUsage = turnUsageSnapshot{}
 	stream.ProviderTerminalToolInvocation = false
 	stream.PendingCompaction = nil
+	stream.PendingCheckpoint = nil
+	stream.PendingCheckpointBlobWrites = make(map[uint32]pendingCheckpointBlobWrite)
+	stream.PendingCheckpointBlobRequests = make(map[string]uint32)
+	stream.NextCheckpointBlobRequestID = 0
+	stream.NextCheckpointRevision = 0
 	stream.Backlog = make([]StreamEvent, 0, 64)
 	stream.CheckpointConversation = nil
 	stream.PendingExecs = make(map[string]runtimecore.PendingExec)

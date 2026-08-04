@@ -23,6 +23,7 @@ type ConversationFile struct {
 	ParentToolCallID                string                                `json:"parent_tool_call_id"`
 	ForkedFromConversationID        string                                `json:"forked_from_conversation_id,omitempty"`
 	ForkRequestID                   string                                `json:"fork_request_id,omitempty"`
+	ImportedTurnIDs                 [][]byte                              `json:"imported_turn_ids,omitempty"`
 	SubagentTypeName                string                                `json:"subagent_type_name,omitempty"`
 	Mode                            string                                `json:"mode"`
 	ContextVersion                  int64                                 `json:"context_version,omitempty"`
@@ -158,6 +159,11 @@ type ActiveStream struct {
 	ProviderUsage                               turnUsageSnapshot
 	ProviderTerminalToolInvocation              bool
 	PendingCompaction                           *PendingCompaction
+	PendingCheckpointBlobWrites                 map[uint32]pendingCheckpointBlobWrite
+	PendingCheckpointBlobRequests               map[string]uint32
+	NextCheckpointBlobRequestID                 uint32
+	NextCheckpointRevision                      uint64
+	PendingCheckpoint                           *pendingCheckpointPublish
 
 	Backlog                     []StreamEvent
 	Subscribers                 map[string]*StreamSubscriber
@@ -212,6 +218,32 @@ type pendingTurnCompletion struct {
 	ProviderPass   int
 	Usage          turnUsageSnapshot
 	Disposition    pendingCompletionDisposition
+}
+
+type pendingCheckpointBlobWrite struct {
+	Key      string
+	Revision uint64
+}
+
+type checkpointTerminalActionKind uint8
+
+const (
+	checkpointTerminalActionNone checkpointTerminalActionKind = iota
+	checkpointTerminalActionComplete
+	checkpointTerminalActionCancel
+)
+
+type checkpointTerminalAction struct {
+	kind          checkpointTerminalActionKind
+	completion    pendingTurnCompletion
+	cancelMessage string
+}
+
+type pendingCheckpointPublish struct {
+	Revision       uint64
+	State          *agentv1.ConversationStateStructure
+	Required       map[string]struct{}
+	TerminalAction checkpointTerminalAction
 }
 
 type PendingCompaction struct {
@@ -414,6 +446,7 @@ type InboundIntent struct {
 	ConversationState        *agentv1.ConversationStateStructure
 	UserMessage              *agentv1.UserMessage
 	PrependUserMessages      []*agentv1.UserMessage
+	PreFetchedBlobs          []*agentv1.PreFetchedBlob
 	RequestContext           *agentv1.RequestContext
 	ClientMessage            *agentv1.AgentClientMessage
 	ExecClientMessage        *agentv1.ExecClientMessage

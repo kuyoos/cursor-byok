@@ -734,6 +734,7 @@ func mergeConversationMetadata(target *ConversationFile, source *ConversationFil
 	target.ParentToolCallID = strings.TrimSpace(source.ParentToolCallID)
 	target.ForkedFromConversationID = strings.TrimSpace(source.ForkedFromConversationID)
 	target.ForkRequestID = strings.TrimSpace(source.ForkRequestID)
+	target.ImportedTurnIDs = cloneByteSlices(source.ImportedTurnIDs)
 	target.SubagentTypeName = strings.TrimSpace(source.SubagentTypeName)
 	if strings.TrimSpace(source.Mode) != "" {
 		target.Mode = strings.TrimSpace(source.Mode)
@@ -880,6 +881,7 @@ func cloneConversationFile(conversation *ConversationFile) *ConversationFile {
 	cloned.CurrentTodos = cloneTodoItems(conversation.CurrentTodos)
 	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
 	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
+	cloned.ImportedTurnIDs = cloneByteSlices(conversation.ImportedTurnIDs)
 	cloned.Entries = append([]HistoryEntry(nil), conversation.Entries...)
 	return &cloned
 }

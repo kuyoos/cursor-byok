@@ -2,6 +2,7 @@
 package forwarder
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,6 +18,51 @@ import (
 const projectedConversationMaxTokens = 130000
 
 type HistoryProjector struct {
+}
+
+type CheckpointBlob struct {
+	ID   []byte
+	Data []byte
+}
+
+type CheckpointProjection struct {
+	State *agentv1.ConversationStateStructure
+	Blobs []CheckpointBlob
+}
+
+type checkpointBlobGraph struct {
+	blobs map[[sha256.Size]byte][]byte
+	order [][sha256.Size]byte
+}
+
+func newCheckpointBlobGraph() *checkpointBlobGraph {
+	return &checkpointBlobGraph{blobs: make(map[[sha256.Size]byte][]byte)}
+}
+
+func (graph *checkpointBlobGraph) add(data []byte) []byte {
+	if graph == nil || len(data) == 0 {
+		return nil
+	}
+	id := sha256.Sum256(data)
+	if _, exists := graph.blobs[id]; !exists {
+		graph.blobs[id] = append([]byte(nil), data...)
+		graph.order = append(graph.order, id)
+	}
+	return append([]byte(nil), id[:]...)
+}
+
+func (graph *checkpointBlobGraph) list() []CheckpointBlob {
+	if graph == nil || len(graph.order) == 0 {
+		return nil
+	}
+	blobs := make([]CheckpointBlob, 0, len(graph.order))
+	for _, id := range graph.order {
+		blobs = append(blobs, CheckpointBlob{
+			ID:   append([]byte(nil), id[:]...),
+			Data: append([]byte(nil), graph.blobs[id]...),
+		})
+	}
+	return blobs
 }
 
 // NewHistoryProjector 创建 history 投影器。
@@ -475,6 +521,16 @@ func isHistoricalReplayToolResult(conversation *ConversationFile, entry HistoryE
 
 // ProjectLegacyCheckpoint 按需从 JSON history 投影出兼容旧客户端的 checkpoint 结构。
 func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *ConversationFile) (*agentv1.ConversationStateStructure, error) {
+	projection, err := projector.ProjectCheckpointProjection(conversation)
+	if err != nil || projection == nil {
+		return nil, err
+	}
+	return projection.State, nil
+}
+
+// ProjectCheckpointProjection 同时返回 checkpoint 状态及其引用的内容寻址 Blob。
+func (projector *HistoryProjector) ProjectCheckpointProjection(conversation *ConversationFile) (*CheckpointProjection, error) {
+	blobs := newCheckpointBlobGraph()
 	state := &agentv1.ConversationStateStructure{
 		TokenDetails: &agentv1.ConversationTokenDetails{
 			UsedTokens: conversationTokenDetailsUsedTokens(conversation),
@@ -488,7 +544,7 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 	if conversation == nil {
 		mode := agentv1.AgentMode_AGENT_MODE_AGENT
 		state.Mode = &mode
-		return state, nil
+		return &CheckpointProjection{State: state}, nil
 	}
 	mode, err := parseModeAlias(conversation.Mode)
 	if err != nil {
@@ -522,11 +578,12 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 		grouped[entry.TurnSeq] = append(grouped[entry.TurnSeq], entry)
 	}
 
+	turnIDs := make([][]byte, 0, len(order))
 	for _, turnSeq := range order {
 		entries := grouped[turnSeq]
-		var rawUserMessage []byte
+		var userMessageID []byte
 		var turnRequestID string
-		steps := make([][]byte, 0, len(entries))
+		stepIDs := make([][]byte, 0, len(entries))
 		seenToolCalls := make(map[string]struct{})
 		openToolCalls := make(map[string]struct{})
 		for _, entry := range entries {
@@ -543,7 +600,7 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 				if err != nil {
 					return nil, err
 				}
-				rawUserMessage = payload
+				userMessageID = blobs.add(payload)
 			case "assistant_text":
 				var payload assistantTextPayload
 				if err := json.Unmarshal(entry.Payload, &payload); err != nil {
@@ -553,16 +610,20 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 					continue
 				}
 				if strings.TrimSpace(payload.ReasoningContent) != "" {
-					stepPayload, err := marshalThinkingStep(payload.ReasoningContent)
+					stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
+						Message: &agentv1.ConversationStep_ThinkingMessage{
+							ThinkingMessage: &agentv1.ThinkingMessage{Text: payload.ReasoningContent},
+						},
+					})
 					if err != nil {
 						return nil, err
 					}
-					steps = append(steps, stepPayload)
+					stepIDs = append(stepIDs, stepID)
 				}
 				if strings.TrimSpace(payload.Text) == "" {
 					continue
 				}
-				stepPayload, err := proto.Marshal(&agentv1.ConversationStep{
+				stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
 					Message: &agentv1.ConversationStep_AssistantMessage{
 						AssistantMessage: &agentv1.AssistantMessage{Text: strings.TrimSpace(payload.Text)},
 					},
@@ -570,18 +631,22 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 				if err != nil {
 					return nil, err
 				}
-				steps = append(steps, stepPayload)
+				stepIDs = append(stepIDs, stepID)
 			case "tool_call":
 				var payload toolCallEntryPayload
 				if err := json.Unmarshal(entry.Payload, &payload); err != nil {
 					return nil, err
 				}
 				if strings.TrimSpace(payload.ReasoningContent) != "" {
-					stepPayload, err := marshalThinkingStep(payload.ReasoningContent)
+					stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
+						Message: &agentv1.ConversationStep_ThinkingMessage{
+							ThinkingMessage: &agentv1.ThinkingMessage{Text: payload.ReasoningContent},
+						},
+					})
 					if err != nil {
 						return nil, err
 					}
-					steps = append(steps, stepPayload)
+					stepIDs = append(stepIDs, stepID)
 				}
 				toolCall := &agentv1.ToolCall{}
 				if err := protojson.Unmarshal(payload.ToolCall, toolCall); err != nil {
@@ -590,15 +655,13 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 				if !shouldPersistToolResultName(firstNonEmpty(strings.TrimSpace(payload.ToolName), inferToolName(toolCall))) {
 					continue
 				}
-				stepPayload, err := proto.Marshal(&agentv1.ConversationStep{
-					Message: &agentv1.ConversationStep_ToolCall{
-						ToolCall: toolCall,
-					},
+				stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
+					Message: &agentv1.ConversationStep_ToolCall{ToolCall: toolCall},
 				})
 				if err != nil {
 					return nil, err
 				}
-				steps = append(steps, stepPayload)
+				stepIDs = append(stepIDs, stepID)
 				if toolCallID := strings.TrimSpace(payload.ToolCallID); toolCallID != "" {
 					seenToolCalls[toolCallID] = struct{}{}
 					openToolCalls[toolCallID] = struct{}{}
@@ -615,11 +678,15 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 					}
 				}
 				if strings.TrimSpace(payload.ReasoningContent) != "" {
-					stepPayload, err := marshalThinkingStep(payload.ReasoningContent)
+					stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
+						Message: &agentv1.ConversationStep_ThinkingMessage{
+							ThinkingMessage: &agentv1.ThinkingMessage{Text: payload.ReasoningContent},
+						},
+					})
 					if err != nil {
 						return nil, err
 					}
-					steps = append(steps, stepPayload)
+					stepIDs = append(stepIDs, stepID)
 				}
 				if len(payload.ToolCall) == 0 {
 					continue
@@ -631,23 +698,21 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 				if !shouldPersistToolResultName(firstNonEmpty(strings.TrimSpace(payload.ToolName), inferToolName(toolCall))) {
 					continue
 				}
-				stepPayload, err := proto.Marshal(&agentv1.ConversationStep{
-					Message: &agentv1.ConversationStep_ToolCall{
-						ToolCall: toolCall,
-					},
+				stepID, err := addCheckpointStepBlob(blobs, &agentv1.ConversationStep{
+					Message: &agentv1.ConversationStep_ToolCall{ToolCall: toolCall},
 				})
 				if err != nil {
 					return nil, err
 				}
-				steps = append(steps, stepPayload)
+				stepIDs = append(stepIDs, stepID)
 			}
 		}
-		if len(rawUserMessage) == 0 && len(steps) == 0 {
+		if len(userMessageID) == 0 && len(stepIDs) == 0 {
 			continue
 		}
 		agentTurn := &agentv1.AgentConversationTurnStructure{
-			UserMessage: rawUserMessage,
-			Steps:       steps,
+			UserMessage: userMessageID,
+			Steps:       stepIDs,
 		}
 		if turnRequestID != "" {
 			agentTurn.RequestId = &turnRequestID
@@ -660,8 +725,9 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 		if err != nil {
 			return nil, err
 		}
-		state.Turns = append(state.Turns, turnPayload)
+		turnIDs = append(turnIDs, blobs.add(turnPayload))
 	}
+	state.Turns = append(cloneByteSlices(conversation.ImportedTurnIDs), turnIDs...)
 	replayMessages, err := projector.ProjectPromptReplay(conversation)
 	if err != nil {
 		return nil, err
@@ -689,15 +755,15 @@ func (projector *HistoryProjector) ProjectLegacyCheckpoint(conversation *Convers
 		return nil, err
 	}
 	state.RootPromptMessagesJson = rootPromptMessages
-	return state, nil
+	return &CheckpointProjection{State: state, Blobs: blobs.list()}, nil
 }
 
-func marshalThinkingStep(text string) ([]byte, error) {
-	return proto.Marshal(&agentv1.ConversationStep{
-		Message: &agentv1.ConversationStep_ThinkingMessage{
-			ThinkingMessage: &agentv1.ThinkingMessage{Text: text},
-		},
-	})
+func addCheckpointStepBlob(blobs *checkpointBlobGraph, step *agentv1.ConversationStep) ([]byte, error) {
+	payload, err := proto.Marshal(step)
+	if err != nil {
+		return nil, err
+	}
+	return blobs.add(payload), nil
 }
 
 func conversationTokenDetailsUsedTokens(conversation *ConversationFile) uint32 {
@@ -1235,7 +1301,7 @@ func filterCheckpointPersistentToolReplay(messages []promptengine.Message) []pro
 	return filtered
 }
 
-func restoreImportedReplayUserMessages(messages []promptengine.Message, importedTurns [][]byte) []promptengine.Message {
+func restoreImportedReplayUserMessages(messages []promptengine.Message, importedTurns [][]byte, blobs importedBlobStore) []promptengine.Message {
 	if len(messages) == 0 || len(importedTurns) == 0 {
 		return messages
 	}
@@ -1244,16 +1310,16 @@ func restoreImportedReplayUserMessages(messages []promptengine.Message, imported
 		if len(rawTurn) == 0 {
 			continue
 		}
-		turn := &agentv1.ConversationTurnStructure{}
-		if err := proto.Unmarshal(rawTurn, turn); err != nil {
+		turn, _, err := decodeImportedTurn(rawTurn, blobs)
+		if err != nil || turn == nil {
 			continue
 		}
 		agentTurn := turn.GetAgentConversationTurn()
 		if agentTurn == nil || len(agentTurn.GetUserMessage()) == 0 {
 			continue
 		}
-		userMessage := &agentv1.UserMessage{}
-		if err := proto.Unmarshal(agentTurn.GetUserMessage(), userMessage); err != nil {
+		userMessage, err := decodeImportedUserMessage(agentTurn.GetUserMessage(), blobs)
+		if err != nil {
 			continue
 		}
 		replay, ok := promptengine.BuildUserMessageReplayMessage(userMessage)

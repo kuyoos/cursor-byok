@@ -9,6 +9,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -260,6 +261,8 @@ type Service struct {
 	execBridge         execbridge.ExecBridge
 	interactionBridge  interactionbridge.InteractionBridge
 	appendSeq          *appendSequenceTracker
+	checkpointBlobMu   sync.Mutex
+	checkpointBlobs    map[string]*checkpointBlobCacheEntry
 }
 
 type agentModelMemory interface {
@@ -299,6 +302,7 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 		execBridge:         execbridge.NewBridge(),
 		interactionBridge:  interactionbridge.NewBridge(),
 		appendSeq:          newAppendSequenceTracker(),
+		checkpointBlobs:    make(map[string]*checkpointBlobCacheEntry),
 	}
 	service.startHistoryMaintenance()
 	return service
@@ -326,6 +330,7 @@ func newServiceWithDependencies(store *ConversationFileStore, projector *History
 		execBridge:         execbridge.NewBridge(),
 		interactionBridge:  interactionbridge.NewBridge(),
 		appendSeq:          newAppendSequenceTracker(),
+		checkpointBlobs:    make(map[string]*checkpointBlobCacheEntry),
 	}
 }
 
@@ -555,6 +560,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		}
 		intent.ConversationID = conversationID
 		intent.ConversationState = runRequest.GetConversationState()
+		intent.PreFetchedBlobs = runRequest.GetPreFetchedBlobs()
 		intent.UserMessage = extractUserMessage(message)
 		intent.PrependUserMessages = extractRunRequestPrependUserMessages(runRequest)
 		intent.RequestContext = extractRequestContext(message)
@@ -603,6 +609,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.ConversationID = conversationID
 		intent.SubagentTypeName = strings.TrimSpace(prewarmRequest.GetSubagentTypeName())
 		intent.ConversationState = prewarmRequest.GetConversationState()
+		intent.PreFetchedBlobs = prewarmRequest.GetPreFetchedBlobs()
 		intent.Mode, intent.ModeSource, intent.HasExplicitMode, err = extractPrewarmMode(prewarmRequest)
 		if err != nil {
 			return InboundIntent{}, err
